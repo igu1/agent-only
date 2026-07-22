@@ -1,0 +1,70 @@
+import logging
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import Query
+
+from api.routes.shared.generic_webhook import handle_incoming_webhook
+from api.routes.shared.channel_registry import registry
+
+
+router = APIRouter(prefix="/webhooks")
+_SERVICE_UNAVAILABLE_MSG = "WhatsApp service not available"
+
+
+def _get_service(channel_id: str):
+    return registry.get('whatsapp').get_service(channel_id)
+
+
+@router.get("/whatsapp/{channel_id}/")
+async def whatsapp_webhook_verify_by_channel(
+    channel_id: str,
+    hub_mode: str | None = Query(alias="hub.mode"),
+    hub_verify_token: str | None = Query(alias="hub.verify_token"),
+    hub_challenge: str | None = Query(alias="hub.challenge"),
+):
+    try:
+        service = _get_service(channel_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _ = e
+        raise HTTPException(status_code=503, detail=_SERVICE_UNAVAILABLE_MSG)
+
+    challenge = service.validate_webhook(hub_mode, hub_verify_token, hub_challenge)
+    if challenge is None:
+        raise HTTPException(status_code=403, detail="Invalid webhook verification")
+
+    return Response(content=challenge, status_code=200, media_type="text/plain")
+
+
+@router.get("/whatsapp/{channel_id}/")
+async def whatsapp_webhook_verify_by_channel_slash(
+    channel_id: str,
+    hub_mode: str | None = Query(alias="hub.mode"),
+    hub_verify_token: str | None = Query(alias="hub.verify_token"),
+    hub_challenge: str | None = Query(alias="hub.challenge"),
+):
+    return await whatsapp_webhook_verify_by_channel(
+        channel_id=channel_id,
+        hub_mode=hub_mode,
+        hub_verify_token=hub_verify_token,
+        hub_challenge=hub_challenge,
+    )
+
+
+
+@router.post("/whatsapp/{channel_id}/")
+async def whatsapp_webhook_by_channel(channel_id: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception as e:
+        logging.error(f"Error parsing webhook payload: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    try:
+        _ = registry.get('whatsapp')
+        return await handle_incoming_webhook(channel_type='whatsapp', channel_id=channel_id, payload=payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error in webhook processing: {e} (channel_id={channel_id})")
+        return {"ok": True}

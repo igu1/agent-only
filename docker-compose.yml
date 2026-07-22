@@ -1,0 +1,19 @@
+services:
+  agent:
+    build: .
+    container_name: crono-agent
+    ports:
+      # - "8080:8001"     # Production
+      - "8085:8001"       # Local Test
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/app/agent
+    restart: unless-stopped
+    volumes:
+      - agent_logs:/app/agent/logs
+
+volumes:
+  agent_logs:

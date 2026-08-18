@@ -1,0 +1,11 @@
+{
+  "_comment": "SaaS Phase 1 tenant registry (see SAAS-ARCHITECTURE.md). Copy to tenants.json (git-ignored), set TENANTS_FILE=/app/agent/tenants.json. Without a registry file the agent runs exactly as before, serving the single 'default' tenant from the classic .env vars. Org keys: lowercase, never 'webchat'.",
+  "sanabl": {
+    "backend_url": "https://api.sanabl.example.com",
+    "api_token": "agw_generate_per_org",
+    "google_api_key": "AIza_org_specific_key",
+    "qdrant_prefix": "sanabl",
+    "phone_number_ids": ["1277267818798741"],
+    "webchat_origins": ["https://sanabl.example.com"]
+  }
+}

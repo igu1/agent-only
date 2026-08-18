@@ -51,14 +51,15 @@ def save_message(*, lead_id: int, content: str, sender_type: str) -> None:
         logging.exception("save_message API call failed (lead_id=%s)", lead_id)
 
 
-def update_lead_from_payload(*, lead_id: int, payload: dict) -> None:
+def update_lead_from_payload(*, lead_id: int, payload: dict) -> dict:
     try:
-        post('/api/agent/v1/leads/update/', {
+        return post('/api/agent/v1/leads/update/', {
             'lead_id': int(lead_id),
             **{k: v for k, v in payload.items() if v is not None},
-        })
+        }) or {}
     except Exception:
         logging.exception("update_lead_from_payload API call failed (lead_id=%s)", lead_id)
+        return {}
 
 
 def update_lead_ai_summary(*, lead_id: int, ai_summary: str | None) -> bool:

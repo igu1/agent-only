@@ -1,0 +1,5 @@
+# SaaS Phase 4 - everything lives in one namespace for the shared model.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cronoagent

@@ -4,8 +4,8 @@ from fastapi import FastAPI
 
 from infra.runtime import init_runtime
 from infra.logging_config import configure_logging
-from api.routes import health
-from api.routes.msgchannels import telegram, whatsapp
+from api.routes import health, rag
+from api.routes.msgchannels import telegram, whatsapp, webchat
 
 
 def create_app() -> FastAPI:
@@ -22,9 +22,24 @@ def create_app() -> FastAPI:
     init_runtime(project_root)
 
     app = FastAPI(title="CronoCRM Agent Service")
+
+    # the webchat widget calls cross-origin from the browser; other channels
+    # are server-to-server and need no CORS
+    origins = [o.strip() for o in os.getenv("WEBCHAT_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    if origins:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Content-Type"],
+        )
+
     app.include_router(health.router)
+    app.include_router(rag.router)
     app.include_router(telegram.router)
     app.include_router(whatsapp.router)
+    app.include_router(webchat.router)
     return app
 
 

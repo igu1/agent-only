@@ -13,6 +13,12 @@ class _Batch:
 _batches: dict[str, _Batch] = {}
 _lock = asyncio.Lock()
 
+# one conversation = one AI turn at a time. Without this, messages arriving
+# WHILE the previous turn is still generating would start a second parallel
+# turn: replies cross each other and stateful steps (OTP generation) can
+# double-fire. Batches that form during processing simply wait their turn.
+_processing: dict[str, asyncio.Lock] = {}
+
 
 def _join(parts: list[str]) -> str:
     return "\n".join([p for p in parts if p])
@@ -53,10 +59,12 @@ async def _run(*, key: str, debounce_seconds: float, handler: Callable[[str], Aw
             del _batches[key]
 
         if text:
-            try:
-                await handler(text)
-            except Exception:
-                import logging
+            plock = _processing.setdefault(key, asyncio.Lock())
+            async with plock:
+                try:
+                    await handler(text)
+                except Exception:
+                    import logging
 
-                logging.exception(f"Batch handler error (key={key})")
+                    logging.exception(f"Batch handler error (key={key})")
         return

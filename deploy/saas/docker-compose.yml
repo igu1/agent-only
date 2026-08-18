@@ -1,0 +1,40 @@
+# SaaS Phase 2 - ONE shared deployment serving every organization.
+# Replaces the per-org folders of DEPLOYMENT.md when the switch thresholds
+# are met (see SAAS-ARCHITECTURE.md). tenants.json lives NEXT TO this file
+# and is volume-mounted: onboarding = edit the file + call
+# POST /infra/reload-tenants - no rebuild, no restart.
+#
+# The .env here holds only NON-tenant settings (model ids, embedder, cache
+# TTLs). All per-org identity (backend URLs, tokens, keys, prefixes) lives
+# in tenants.json.
+services:
+  agent:
+    image: cronoagent:v1.0            # build once: docker build -t cronoagent:v1.0 <repo>
+    container_name: saas-agent
+    restart: unless-stopped
+    mem_limit: 1g
+    ports:
+      - "8080:8001"
+    env_file: [.env]
+    environment:
+      - PYTHONPATH=/app/agent
+      - QDRANT_URL=http://qdrant:6333
+      - TENANTS_FILE=/app/agent/tenants.json
+    volumes:
+      - ./tenants.json:/app/agent/tenants.json:ro
+      - agent_logs:/app/agent/logs
+      - agent_mem:/app/agent/mem
+    depends_on: [qdrant]
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: saas-qdrant
+    restart: unless-stopped
+    mem_limit: 1g
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  agent_logs:
+  agent_mem:
+  qdrant_data:

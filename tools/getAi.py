@@ -74,6 +74,58 @@ def get_rule_bot_rules(*, agent_id: int | None = None) -> list[dict]:
     return cached_query(get_cache_key('rule_bot_rules_active', agent_id), fetch)
 
 
+def get_fee_chart(class_id: int) -> list[dict]:
+    """Official fee chart rows for a class: receipt / installment / item / amount."""
+    def fetch():
+        resp = _api_get('/api/agent/v1/fees/', {'class_id': class_id})
+        return resp.get('data', []) if resp.get('ok') else []
+    return cached_query(get_cache_key('fee_chart', class_id), fetch)
+
+
+def get_inquiry_status_rows(phone: str) -> list[dict]:
+    """Live inquiry status rows for a mobile number - never cached, the
+    status changes as staff work the inquiry."""
+    resp = _api_get('/api/agent/v1/inquiry-status/', {'phone': phone})
+    return resp.get('data', []) if resp.get('ok') else []
+
+
+# ── school dropdowns - lists the AI must output valid IDs from ──
+
+def get_active_institutions(*, agent_id: int | None = None) -> list[dict]:
+    def fetch():
+        resp = _api_get('/api/agent/v1/institutions/', {'agent_id': agent_id})
+        return resp.get('data', []) if resp.get('ok') else []
+    return cached_query(get_cache_key('institutions_active', agent_id), fetch)
+
+
+def get_active_classes(*, agent_id: int | None = None, institution_id: int | None = None) -> list[dict]:
+    def fetch():
+        resp = _api_get('/api/agent/v1/classes/', {'agent_id': agent_id, 'institution_id': institution_id})
+        return resp.get('data', []) if resp.get('ok') else []
+    return cached_query(get_cache_key('classes_active', agent_id, institution_id), fetch)
+
+
+def get_inquiry_types(*, agent_id: int | None = None) -> list[dict]:
+    def fetch():
+        resp = _api_get('/api/agent/v1/inquiry-types/', {'agent_id': agent_id})
+        return resp.get('data', []) if resp.get('ok') else []
+    return cached_query(get_cache_key('inquiry_types_active', agent_id), fetch)
+
+
+def get_relations(*, agent_id: int | None = None) -> list[dict]:
+    def fetch():
+        resp = _api_get('/api/agent/v1/relations/', {'agent_id': agent_id})
+        return resp.get('data', []) if resp.get('ok') else []
+    return cached_query(get_cache_key('relations_active', agent_id), fetch)
+
+
+def get_followup_types(*, agent_id: int | None = None) -> list[dict]:
+    def fetch():
+        resp = _api_get('/api/agent/v1/followup-types/', {'agent_id': agent_id})
+        return resp.get('data', []) if resp.get('ok') else []
+    return cached_query(get_cache_key('followup_types_active', agent_id), fetch)
+
+
 def get_active_products(*, agent_id: int | None = None) -> list[dict]:
     def fetch():
         resp = _api_get('/api/agent/v1/products/', {'agent_id': agent_id})

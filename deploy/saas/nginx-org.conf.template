@@ -1,0 +1,15 @@
+# SaaS Phase 2 - nginx site per organization DOMAIN, all proxying to the
+# SAME shared agent. Copy per org, replace <ORG_DOMAIN>; then:
+#   ln -s /etc/nginx/sites-available/<org>-agent /etc/nginx/sites-enabled/
+#   nginx -t && systemctl reload nginx && certbot --nginx -d agent.<ORG_DOMAIN>
+#
+# WhatsApp note: all orgs may instead share ONE domain and ONE Meta callback
+# URL - the agent routes by the payload's phone_number_id (tenants.json).
+# Web chat widgets call the org-prefixed path: /webhooks/<org>/webchat/...
+server {
+    server_name agent.<ORG_DOMAIN>;
+    location / {
+        proxy_pass http://127.0.0.1:8080;    # the ONE shared agent
+        proxy_set_header Host $host;
+    }
+}

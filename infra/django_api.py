@@ -1,15 +1,18 @@
 import json
-import os
 import urllib.request
 import urllib.error
 
+from infra.tenants import get_tenant
+
 
 def _get_base_url() -> str:
-    return (os.getenv("DJANGO_INTERNAL_URL") or "http://localhost:8000").rstrip("/")
+    # SaaS Phase 1: backend identity comes from the CURRENT TENANT context
+    # (the default tenant mirrors the classic env vars exactly)
+    return get_tenant()['backend_url']
 
 
 def _get_token() -> str:
-    return (os.getenv("AGENT_API_TOKEN") or "").strip()
+    return get_tenant()['api_token']
 
 
 def post(path: str, payload: dict, extra_headers: dict | None = None) -> dict:

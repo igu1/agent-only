@@ -1,14 +1,31 @@
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fastapi import HTTPException
 
+logger = logging.getLogger(__name__)
+
 _SERVICE_CACHE_TTL = 300
 
 
 def _to_int(value: Any) -> int | None:
     return int(value) if value is not None else None
+
+
+def _context_from_channel(channel: dict | None) -> 'ChannelContext':
+    """Resolve org / institution (branch) / agent tagging from the channel config."""
+    if not channel:
+        return ChannelContext(None, None, None)
+    try:
+        return ChannelContext(
+            organization_id=_to_int(channel.get('organization_id')),
+            branch_id=_to_int(channel.get('branch_id') or channel.get('institution_id')),
+            agent_id=_to_int(channel.get('agent_id')),
+        )
+    except (TypeError, ValueError):
+        return ChannelContext(None, None, None)
 
 
 @dataclass(frozen=True)
@@ -124,7 +141,10 @@ class TelegramAdapter:
         )
 
     def get_context(self, *, channel_id: str | None, message: IncomingMessage) -> ChannelContext:
-        return ChannelContext(None, None, None)
+        if not channel_id:
+            return ChannelContext(None, None, None)
+        from tools.getMsgChannels import get_telegram_channel
+        return _context_from_channel(get_telegram_channel(channel_id))
 
     def should_ignore(self, *, channel_id: str | None, service: object, message: IncomingMessage) -> bool:
         return message.text.startswith('/')
@@ -214,7 +234,8 @@ class WhatsAppAdapter:
         )
 
     def get_context(self, *, channel_id: str | None, message: IncomingMessage) -> ChannelContext:
-        return ChannelContext(None, None, None)
+        from tools.getMsgChannels import get_whatsapp_channel
+        return _context_from_channel(get_whatsapp_channel(channel_id))
 
     def should_ignore(self, *, channel_id: str | None, service: object, message: IncomingMessage) -> bool:
         if message.text.startswith('/'):
@@ -307,6 +328,12 @@ class InstagramAdapter:
             logger.error(f"Error parsing Instagram payload: {e}")
         return None
 
+    def get_context(self, *, channel_id: str | None, message: IncomingMessage) -> ChannelContext:
+        if not channel_id:
+            return ChannelContext(None, None, None)
+        from tools.getMsgChannels import get_instagram_channel
+        return _context_from_channel(get_instagram_channel(channel_id))
+
     def should_ignore(self, *, channel_id: str | None, service: object, message: IncomingMessage) -> bool:
         return message.text.startswith('/')
 
@@ -325,5 +352,95 @@ class InstagramAdapter:
     def send_media_message(self, *, service: object, message: IncomingMessage, media_type: str, link: str, caption: str | None = None, filename: str | None = None) -> None:
         try:
             service.send_media_message(message.chat_id, media_type=media_type, link=link, caption=caption, filename=filename)
+        except Exception as e:
+            _ = e
+
+
+# webchat - the website chat widget; no third-party API, replies go to the
+# in-process store the widget polls (see shared/webchat_store.py)
+
+_SESSION_ID_MAX = 64
+_TEXT_MAX = 4000
+
+
+class _WebChatService:
+    def __init__(self, channel_config: dict) -> None:
+        self.channel_config = channel_config
+
+
+class WebChatAdapter:
+    channel_type = 'webchat'
+
+    def __init__(self) -> None:
+        self._services: dict[str, tuple[object, float]] = {}
+
+    @staticmethod
+    def is_valid_session_id(session_id) -> bool:
+        return (
+            isinstance(session_id, str)
+            and 0 < len(session_id) <= _SESSION_ID_MAX
+            and all(c.isalnum() or c in '-_' for c in session_id)
+        )
+
+    def get_service(self, channel_id: str | None) -> object:
+        if not channel_id:
+            raise HTTPException(status_code=404, detail='Webchat channel not found or inactive')
+        cached = self._services.get(channel_id)
+        if cached is not None and time.time() < cached[1]:
+            return cached[0]
+
+        from tools.getMsgChannels import get_webchat_channel
+        channel = get_webchat_channel(channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail='Webchat channel not found or inactive')
+
+        service = _WebChatService(channel)
+        self._services[channel_id] = (service, time.time() + _SERVICE_CACHE_TTL)
+        return service
+
+    def validate(self, *, channel_id: str | None, service: object, headers: dict[str, str | None]) -> None:
+        return None
+
+    def parse(self, *, service: object, payload: dict) -> IncomingMessage | None:
+        session_id = payload.get('session_id')
+        if not self.is_valid_session_id(session_id):
+            return None
+
+        text = str(payload.get('text') or '').strip()
+        if not text:
+            return None
+        text = text[:_TEXT_MAX]
+
+        message_id = payload.get('message_id')
+        if message_id is None:
+            message_id = f"{session_id}:{int(time.time() * 1000)}"
+
+        return IncomingMessage(
+            chat_id=str(session_id),
+            user_id=f'web_{session_id}',
+            text=text,
+            message_id=str(message_id),
+        )
+
+    def get_context(self, *, channel_id: str | None, message: IncomingMessage) -> ChannelContext:
+        if not channel_id:
+            return ChannelContext(None, None, None)
+        from tools.getMsgChannels import get_webchat_channel
+        return _context_from_channel(get_webchat_channel(channel_id))
+
+    def should_ignore(self, *, channel_id: str | None, service: object, message: IncomingMessage) -> bool:
+        return message.text.startswith('/')
+
+    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> None:
+        try:
+            from api.routes.shared.webchat_store import store
+            store.append_message(message.chat_id, text)
+        except Exception as e:
+            _ = e
+
+    def send_typing_indicator(self, *, service: object, message: IncomingMessage) -> None:
+        try:
+            from api.routes.shared.webchat_store import store
+            store.set_typing(message.chat_id)
         except Exception as e:
             _ = e

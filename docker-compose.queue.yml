@@ -1,0 +1,47 @@
+# SaaS Phase 3 overlay - gateway/queue/worker split. WITHOUT this overlay the
+# stack runs exactly as before (in-process batching, single service).
+#
+#   up:      docker compose -f docker-compose.yml -f docker-compose.queue.yml up -d
+#   scale:   ... up -d --scale worker=3
+#
+# agent  -> becomes the thin GATEWAY (webhooks in, enqueue, instant 200)
+# worker -> same image, runs worker.py, does the AI turns
+# redis  -> queue + debounce + per-chat locks + per-org fairness counters
+services:
+  agent:
+    environment:
+      - PYTHONPATH=/app/agent
+      - QDRANT_URL=http://qdrant:6333
+      - TENANTS_FILE=/app/agent/tenants.json
+      - QUEUE_MODE=redis
+      - REDIS_URL=redis://redis:6379/0
+    depends_on: [qdrant, redis]
+
+  worker:
+    build: .
+    image: agent-only-agent
+    command: python -u worker.py
+    restart: unless-stopped
+    mem_limit: 768m
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/agent
+      - QDRANT_URL=http://qdrant:6333
+      - TENANTS_FILE=/app/agent/tenants.json
+      - QUEUE_MODE=redis
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - agent_logs:/app/agent/logs
+      - agent_mem:/app/agent/mem
+      - ./tenants.json:/app/agent/tenants.json:ro
+    depends_on: [qdrant, redis]
+
+  redis:
+    image: redis:7-alpine
+    container_name: crono-redis
+    restart: unless-stopped
+    mem_limit: 128m
+    command: redis-server --save "" --appendonly no

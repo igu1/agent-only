@@ -1,0 +1,10 @@
+.env
+tenants.json
+__pycache__/
+*.pyc
+logs/
+mem/*.sqlite3
+# secret-bearing deploy files (templates/examples ARE tracked)
+deploy/saas/.env
+deploy/saas/tenants.json
+deploy/k8s/secrets.yaml

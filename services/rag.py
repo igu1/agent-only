@@ -9,8 +9,14 @@ from tools.getAi import get_active_faqs, get_active_knowledge_base, get_active_p
 
 
 def _collection_name(agent_id: int | None) -> str:
+    # per-company prefix so multiple companies can share one Qdrant without
+    # their agent-N collections colliding (agent 0 = company-level agent).
+    # SaaS Phase 1: the prefix comes from the current tenant (the default
+    # tenant mirrors the QDRANT_COLLECTION_PREFIX env var).
+    from infra.tenants import get_tenant
+    prefix = get_tenant()['qdrant_prefix']
     suffix = str(agent_id) if agent_id is not None else "default"
-    return f"cronocrm-ai-profile-{suffix}"
+    return f"{prefix}-{suffix}"
 
 
 def _build_embedder():
@@ -24,11 +30,15 @@ def build_knowledge(*, agent_id: int | None) -> Knowledge:
     qdrant_url = os.getenv("QDRANT_URL") or "http://localhost:6333"
     qdrant_api_key = os.getenv("QDRANT_API_KEY")
 
+    # dense-only by default: hybrid needs the fastembed sparse model, which is
+    # an extra dependency/download — enable via QDRANT_SEARCH=hybrid when wanted
+    search_type = SearchType.hybrid if os.getenv("QDRANT_SEARCH", "").lower() == "hybrid" else SearchType.vector
+
     vector_db = Qdrant(
         collection=_collection_name(agent_id),
         url=qdrant_url,
         api_key=qdrant_api_key,
-        search_type=SearchType.hybrid,
+        search_type=search_type,
         embedder=_build_embedder(),
     )
 
@@ -66,18 +76,29 @@ def _index_faqs(*, knowledge: Knowledge, agent_id: int | None) -> None:
 
 
 def _index_kb(*, knowledge: Knowledge, agent_id: int | None) -> None:
+    # articles are {title, category, content}; legacy rows may still carry
+    # {question, answer} - support both shapes
     kb_entries = get_active_knowledge_base(agent_id=agent_id)
     for kb in kb_entries:
-        q = (kb.get("question") or "").strip()
-        a = (kb.get("answer") or "").strip()
-        if not q or not a:
+        content = (kb.get("content") or "").strip()
+        if not content:
+            q = (kb.get("question") or "").strip()
+            a = (kb.get("answer") or "").strip()
+            content = f"Question: {q}\nAnswer: {a}" if q and a else ""
+        if not content:
             continue
+        parts = []
         category = (kb.get("category") or "").strip()
-        prefix = f"Category: {category}\n" if category else ""
+        if category:
+            parts.append(f"Category: {category}")
+        title = (kb.get("title") or "").strip()
+        if title:
+            parts.append(f"Title: {title}")
+        parts.append(content)
         _insert_text(
             knowledge=knowledge,
             name=f"kb:{kb.get('id')}",
-            text=f"{prefix}Question: {q}\nAnswer: {a}",
+            text="\n".join(parts),
             metadata={"agent_id": agent_id, "type": "knowledge_base", "row_id": kb.get("id")},
         )
 

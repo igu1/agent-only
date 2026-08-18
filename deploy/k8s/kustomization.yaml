@@ -1,0 +1,11 @@
+# kubectl apply -k deploy/k8s   (after creating secrets.yaml from the example)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cronoagent
+resources:
+  - namespace.yaml
+  - redis.yaml
+  - qdrant.yaml
+  - gateway.yaml
+  - worker.yaml
+  - ingress.yaml

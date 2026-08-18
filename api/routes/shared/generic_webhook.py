@@ -87,7 +87,10 @@ async def handle_incoming_webhook(
     if adapter.should_ignore(channel_id=channel_id, service=service, message=message):
         return {'ok': True}
 
-    batch_key = f"{channel_type}:{channel_id}:{message.chat_id}"
+    # SaaS Phase 1: batch/lock keys are tenant-scoped - every org has a
+    # "channel 1", so without the org two schools' chats could collide
+    from infra.tenants import get_org
+    batch_key = f"{get_org()}:{channel_type}:{channel_id}:{message.chat_id}"
     adapter.send_typing_indicator(service=service, message=message)        
 
     inbound = django_post(
@@ -181,18 +184,52 @@ async def handle_incoming_webhook(
             )
         
         def escalation_message_getter() -> str:
-            return "I'm connecting you with one of our Business Development Associates now. They'll be with you shortly to help you further. 👋"
+            # flow-configured message first, neutral fallback otherwise
+            try:
+                from tools.getAi import get_active_flows
+                flow_message = (get_active_flows(agent_id=agent_id) or {}).get('escalation_message')
+                if flow_message and str(flow_message).strip():
+                    return str(flow_message).strip()
+            except Exception as e:
+                _ = e
+            return "I'm connecting you with our team now. They'll be with you shortly to help you further. 👋"
         
+        # SaaS Phase 1: chat memory ids are tenant-scoped for non-default
+        # tenants (lead ids collide across org databases). The default
+        # tenant keeps the bare id so existing conversations continue.
+        from infra.tenants import get_org as _get_org, DEFAULT_ORG as _DEF
+        _org = _get_org()
+        _sid = str(lead_id_int) if _org == _DEF else f"{_org}:{lead_id_int}"
         await handle_agent_batch(
             batched_text=batched_text,
-            user_id=message.user_id,
-            session_id=str(lead_id_int),
+            user_id=message.user_id if (_org == _DEF or not message.user_id) else f"{_org}:{message.user_id}",
+            session_id=_sid,
             lead_id=lead_id_int,
             channel_agent_id=int(agent_id),
             send_message=send_message,
             escalation_message_getter=escalation_message_getter,
             voice_audio_bytes=voice_audio_bytes,
+            known_phone=inbound.get('known_phone'),
         )
+
+    # SaaS Phase 3: in QUEUE_MODE=redis this process is a thin GATEWAY - the
+    # AI turn runs in a separate worker. Voice turns carry raw audio bytes
+    # and bypass the queue (processed in-process as before).
+    from api.routes.shared.redis_queue import queue_enabled, enqueue_job
+    if queue_enabled() and voice_audio_bytes is None:
+        from infra.tenants import get_org as _qorg
+        enqueue_job(key=batch_key, text=message.text, job={
+            'org': _qorg(),
+            'channel_type': str(channel_type),
+            'channel_id': str(channel_id),
+            'chat_id': str(message.chat_id),
+            'user_id': message.user_id,
+            'message_id': message.message_id,
+            'lead_id': lead_id_int,
+            'agent_id': int(agent_id),
+            'known_phone': inbound.get('known_phone'),
+        })
+        return {'ok': True}
 
     await enqueue(key=batch_key, text=message.text, debounce_seconds=1.5, handler=_handle_batch)
     return {'ok': True}

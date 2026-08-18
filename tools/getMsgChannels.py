@@ -32,3 +32,7 @@ def get_telegram_channel(channel_id: str) -> dict | None:
 
 def get_instagram_channel(channel_id: str) -> dict | None:
     return get_active_channel_by_type('instagram', channel_id)
+
+
+def get_webchat_channel(channel_id: str) -> dict | None:
+    return get_active_channel_by_type('webchat', channel_id)

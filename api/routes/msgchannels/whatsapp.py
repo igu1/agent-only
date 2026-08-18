@@ -4,10 +4,25 @@ from fastapi import Query
 
 from api.routes.shared.generic_webhook import handle_incoming_webhook
 from api.routes.shared.channel_registry import registry
+from infra.tenants import resolve_org_by_phone_number_id, set_org
 
 
 router = APIRouter(prefix="/webhooks")
 _SERVICE_UNAVAILABLE_MSG = "WhatsApp service not available"
+
+
+def _resolve_tenant_from_payload(payload: dict) -> None:
+    """SaaS Phase 1: all orgs may share ONE Meta callback URL - the payload's
+    phone_number_id identifies the tenant. Unknown/absent ids keep the
+    default tenant (the classic per-org deployment)."""
+    try:
+        value = ((payload.get('entry') or [{}])[0].get('changes') or [{}])[0].get('value') or {}
+        pnid = (value.get('metadata') or {}).get('phone_number_id')
+        org = resolve_org_by_phone_number_id(pnid)
+        if org:
+            set_org(org)
+    except Exception:
+        pass
 
 
 def _get_service(channel_id: str):
@@ -61,6 +76,7 @@ async def whatsapp_webhook_by_channel(channel_id: str, request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
     try:
+        _resolve_tenant_from_payload(payload)
         _ = registry.get('whatsapp')
         return await handle_incoming_webhook(channel_type='whatsapp', channel_id=channel_id, payload=payload)
     except HTTPException:

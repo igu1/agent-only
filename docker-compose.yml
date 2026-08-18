@@ -8,12 +8,34 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
-      - ../.env
+      - .env
     environment:
       - PYTHONPATH=/app/agent
+      # RAG vector store (service below); collection prefix separates
+      # companies when a Qdrant is shared across deployments
+      - QDRANT_URL=http://qdrant:6333
+      # SaaS Phase 1: multi-tenant registry (optional). If the file is absent
+      # the agent serves the single 'default' tenant from .env, unchanged.
+      # In production mount tenants.json as a volume instead of baking it in.
+      - TENANTS_FILE=/app/agent/tenants.json
     restart: unless-stopped
+    depends_on:
+      - qdrant
     volumes:
       - agent_logs:/app/agent/logs
+      - agent_mem:/app/agent/mem
+      # SaaS Phase 2: registry mounted live - edit tenants.json + call
+      # POST /infra/reload-tenants; no rebuild, no restart
+      - ./tenants.json:/app/agent/tenants.json:ro
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: crono-qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
 
 volumes:
   agent_logs:
+  agent_mem:
+  qdrant_data:

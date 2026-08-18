@@ -78,7 +78,10 @@ def _get_redis_client():
 
 
 def get_cache_key(prefix: str, *args) -> str:
-    key_data = f"{prefix}:{':'.join(map(str, args))}"
+    # SaaS Phase 1: every cache entry is tenant-scoped - two orgs may share
+    # agent ids (every org has an "agent 1"), so the org is part of the key
+    from infra.tenants import get_org
+    key_data = f"{get_org()}:{prefix}:{':'.join(map(str, args))}"
     return _KEY_PREFIX + hashlib.md5(key_data.encode()).hexdigest()
 
 

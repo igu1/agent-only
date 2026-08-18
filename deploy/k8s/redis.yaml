@@ -1,0 +1,36 @@
+# Queue backbone. Deliberately ephemeral (no persistence): the queue holds
+# in-flight chat turns for seconds; on restart, parents' next message simply
+# re-enters. Losing it never loses data - conversations live in SQL.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: cronoagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          ports: [{ containerPort: 6379 }]
+          resources:
+            requests: { memory: "64Mi", cpu: "50m" }
+            limits: { memory: "128Mi" }
+          livenessProbe:
+            tcpSocket: { port: 6379 }
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: cronoagent
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379, targetPort: 6379 }]

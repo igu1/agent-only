@@ -14,6 +14,26 @@ def _to_int(value: Any) -> int | None:
     return int(value) if value is not None else None
 
 
+def _to_int_or_none(value: Any) -> int | None:
+    """Same, but a widget-supplied value is untrusted - junk becomes None."""
+    try:
+        return int(value) if value is not None and value != '' else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_seconds(value: Any, *, millis: bool = False) -> float | None:
+    """Channel-reported send time -> epoch seconds. Every channel types it
+    differently (int, float or numeric string) and Instagram sends millis."""
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    return ts / 1000.0 if millis else ts
+
+
 def _context_from_channel(channel: dict | None) -> 'ChannelContext':
     """Resolve org / institution (branch) / agent tagging from the channel config."""
     if not channel:
@@ -37,6 +57,15 @@ class IncomingMessage:
     has_media: bool = False
     is_voice: bool = False
     voice_media_id: str | None = None
+    # epoch seconds the user actually SENT this message, as the channel
+    # reports it (WhatsApp/Telegram/Instagram carry it in the webhook payload;
+    # the webchat widget has no trusted clock, so it is stamped on arrival).
+    # The backend keeps the first one of a conversation as its chat start time.
+    sent_at: float | None = None
+    # the institution chosen on the HOST PAGE before the chat opened (the
+    # inquiry page's dropdown). Webchat carries it on every message so the
+    # assistant is told which college it serves instead of asking.
+    institution_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +167,7 @@ class TelegramAdapter:
             has_media=has_media,
             is_voice=is_voice,
             voice_media_id=str(voice_media_id) if voice_media_id else None,
+            sent_at=_epoch_seconds(message.get('date')) or time.time(),
         )
 
     def get_context(self, *, channel_id: str | None, message: IncomingMessage) -> ChannelContext:
@@ -231,6 +261,7 @@ class WhatsAppAdapter:
             has_media=has_media,
             is_voice=is_voice,
             voice_media_id=str(voice_media_id) if voice_media_id else None,
+            sent_at=_epoch_seconds(message.get('timestamp')) or time.time(),
         )
 
     def get_context(self, *, channel_id: str | None, message: IncomingMessage) -> ChannelContext:
@@ -323,6 +354,7 @@ class InstagramAdapter:
                                 has_media=has_media,
                                 is_voice=is_voice,
                                 voice_media_id=voice_media_id,
+                                sent_at=_epoch_seconds(messaging.get('timestamp'), millis=True) or time.time(),
                             )
         except Exception as e:
             logger.error(f"Error parsing Instagram payload: {e}")
@@ -420,6 +452,8 @@ class WebChatAdapter:
             user_id=f'web_{session_id}',
             text=text,
             message_id=str(message_id),
+            sent_at=time.time(),
+            institution_id=_to_int_or_none(payload.get('institution_id')),
         )
 
     def get_context(self, *, channel_id: str | None, message: IncomingMessage) -> ChannelContext:

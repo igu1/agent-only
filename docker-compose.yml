@@ -11,6 +11,10 @@ services:
       - .env
     environment:
       - PYTHONPATH=/app/agent
+      # inside a container "localhost" is the container itself - reach the
+      # host machine's .NET API via Docker's host alias (overrides the
+      # native-dev localhost value in .env; compose environment beats env_file)
+      - DJANGO_INTERNAL_URL=http://host.docker.internal:5200
       # RAG vector store (service below); collection prefix separates
       # companies when a Qdrant is shared across deployments
       - QDRANT_URL=http://qdrant:6333
@@ -32,6 +36,10 @@ services:
     image: qdrant/qdrant:latest
     container_name: crono-qdrant
     restart: unless-stopped
+    ports:
+      # localhost-only: lets a natively-run agent (dev "Method 2" - agent via
+      # uvicorn on Windows, only Qdrant in Docker) reach the vector store
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
 

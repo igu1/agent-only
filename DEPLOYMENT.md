@@ -19,6 +19,30 @@ External connections per organization:
 One organization = one agent container + one `.env`. Qdrant is shared;
 organizations are separated inside it by `QDRANT_COLLECTION_PREFIX`.
 
+## 1b. Deployment models — pick one before continuing
+
+**Model A — one container per organization (sections 3–11 of this guide).**
+Simplest isolation: each org gets its own container, port, and `.env`. No
+`tenants.json` is needed — a container without one runs in single-tenant
+mode from its `.env` alone. Recommended for the first production org.
+
+**Model B — one shared stack serving every organization (SaaS).**
+A single agent stack reads the org registry from `tenants.json`; onboarding
+a new school is "append one JSON block + `POST /infra/reload-tenants`" with
+no rebuild and no restart. Web chat uses per-org URLs
+(`/webhooks/<org>/webchat/...`); WhatsApp routes itself by the Phone Number
+ID in the webhook payload. The ready-made kit lives in **`deploy/saas/`**
+(compose file, nginx site template, `onboard-org.sh`). Design and rationale:
+`SAAS-ARCHITECTURE.md`.
+
+**Scale add-on (works with either model).** Under load, split the stack into
+gateway + queue + workers by adding the overlay:
+`docker compose -f docker-compose.yml -f docker-compose.queue.yml up -d`
+(adds Redis and a worker service; scale with `--scale worker=3`). For a
+cluster instead of one server, Kubernetes manifests are in **`deploy/k8s/`**
+with their own README. Note: keep workers ≤3 until chat memory is moved off
+sqlite (see the caveat in `deploy/k8s/README`).
+
 ## 2. Prerequisites
 
 - Linux server with Docker Engine + Compose plugin (`docker compose version`).
@@ -249,6 +273,8 @@ docker compose -p <org> restart             # bounce one org only
 | WhatsApp replies not delivered | Meta error 190 in logs = expired access token → paste a new one in CRM → Channels (use a permanent System User token in production) |
 | AI answers "I don't have that information" | content added but **Reindex not clicked**, or Qdrant container down |
 | 401 between .NET and agent | `AGENT_API_TOKEN` ≠ `AgentGateway:ApiToken` |
+| (Model B) org web-chat URL returns 404 | org key missing/misspelled in `tenants.json`, or registry not reloaded (`POST /infra/reload-tenants`) |
+| (queue overlay) replies never arrive but webhooks return ok | worker container down or unhealthy — `docker ps` should show the worker `(healthy)`; check `docker logs <project>-worker-1` |
 
 ## 14. Security rules
 

@@ -17,6 +17,23 @@ def _to_int(value):
     return int(value) if value is not None else None
 
 
+def _to_iso(epoch_seconds: float | None) -> str | None:
+    """Send time -> ISO 8601 carrying the tenant's UTC offset. The backend
+    stamps a conversation's CHAT START TIME from the first inbound message it
+    receives, so this must be when the parent sent it (WhatsApp reports the
+    real send time), not when a retried webhook happened to reach us."""
+    if not epoch_seconds:
+        return None
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from infra.config import get_timezone
+    try:
+        tz = ZoneInfo(get_timezone())
+    except Exception:
+        tz = timezone.utc
+    return datetime.fromtimestamp(float(epoch_seconds), tz).isoformat()
+
+
 def _download_whatsapp_voice(service, media_id: str) -> bytes | None:
     """Download voice audio bytes from WhatsApp using the service's access token."""
     try:
@@ -87,11 +104,28 @@ async def handle_incoming_webhook(
     if adapter.should_ignore(channel_id=channel_id, service=service, message=message):
         return {'ok': True}
 
+    # WHICH INSTITUTION this chat is about, settled before the conversation:
+    # the host page's dropdown sends it with the message; failing that, a
+    # channel bound to one branch already answers it. Only when both are empty
+    # does the assistant have to ask.
+    institution_id = message.institution_id
+    if institution_id is None:
+        try:
+            institution_id = adapter.get_context(channel_id=channel_id, message=message).branch_id
+        except Exception as e:
+            _ = e
+            institution_id = None
+
     # SaaS Phase 1: batch/lock keys are tenant-scoped - every org has a
     # "channel 1", so without the org two schools' chats could collide
     from infra.tenants import get_org
     batch_key = f"{get_org()}:{channel_type}:{channel_id}:{message.chat_id}"
     adapter.send_typing_indicator(service=service, message=message)        
+
+    sent_at = _to_iso(message.sent_at)
+    # the widget shows the chat start time from THIS value (the first message
+    # of a chat is where it starts), so it never has to trust a browser clock
+    ack = {'ok': True, 'sent_at': sent_at}
 
     inbound = django_post(
         '/api/agent/v1/inbound/',
@@ -102,6 +136,7 @@ async def handle_incoming_webhook(
             'message_id': message.message_id,
             'text': message.text,
             'has_media': bool(message.has_media),
+            'sent_at': sent_at,
         },
         extra_headers={
             'X-Telegram-Bot-Api-Secret-Token': (headers or {}).get('x_telegram_bot_api_secret_token'),
@@ -114,7 +149,7 @@ async def handle_incoming_webhook(
             raise HTTPException(status_code=401, detail='Unauthorized')
         if code == 404:
             raise HTTPException(status_code=404, detail='Channel not found or inactive')
-        return {'ok': True}
+        return ack
 
     lead_id_int = _to_int(inbound.get('lead_id'))
     org_id = _to_int(inbound.get('organization_id'))
@@ -129,7 +164,7 @@ async def handle_incoming_webhook(
                     'id': _to_int(inbound.get('message_db_id')),
                     'content': message.text or '',
                     'sender_type': 'lead',
-                    'timestamp': None,
+                    'timestamp': sent_at,
                     'attachment_url': None,
                     'file_type': 'voice' if message.is_voice else None,
                 },
@@ -143,7 +178,7 @@ async def handle_incoming_webhook(
                     'conversation_id': lead_id_int,
                     'lead_id': lead_id_int,
                     'last_message': 'Voice message' if message.is_voice else (message.text or ''),
-                    'last_message_time': None,
+                    'last_message_time': sent_at,
                     'indicator_type': 'lead',
                     'ai_enabled': bool(inbound.get('ai_enabled', True)),
                     'escalation_status': bool(inbound.get('escalated', False)),
@@ -151,17 +186,17 @@ async def handle_incoming_webhook(
             )
 
     if inbound.get('ignore'):
-        return {'ok': True}
+        return ack
 
     if lead_id_int is None:
-        return {'ok': True}
+        return ack
 
     agent_id = _to_int(inbound.get('agent_id'))
     if agent_id is None:
-        return {'ok': True}
+        return ack
     
     if message.has_media and not message.is_voice:
-        return {'ok': True}
+        return ack
 
     # For voice messages, download audio bytes for direct model processing
     voice_audio_bytes: bytes | None = None
@@ -210,6 +245,8 @@ async def handle_incoming_webhook(
             escalation_message_getter=escalation_message_getter,
             voice_audio_bytes=voice_audio_bytes,
             known_phone=inbound.get('known_phone'),
+            channel_type=str(channel_type),
+            institution_id=institution_id,
         )
 
     # SaaS Phase 3: in QUEUE_MODE=redis this process is a thin GATEWAY - the
@@ -228,8 +265,9 @@ async def handle_incoming_webhook(
             'lead_id': lead_id_int,
             'agent_id': int(agent_id),
             'known_phone': inbound.get('known_phone'),
+            'institution_id': institution_id,
         })
-        return {'ok': True}
+        return ack
 
     await enqueue(key=batch_key, text=message.text, debounce_seconds=1.5, handler=_handle_batch)
-    return {'ok': True}
+    return ack

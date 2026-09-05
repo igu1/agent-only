@@ -41,18 +41,8 @@ from infra.profile import (
     build_introduction,
     build_expected_output,
 )
-from tools.business_info import (
-    get_business_locations,
-    get_business_location_by_name,
-    get_primary_business_location,
-    get_faqs,
-    get_products,
-    get_product_details,
-    get_fee_details,
-    get_inquiry_status,
-)
-from tools.datetime_tools import get_current_day
-from tools.getSource import get_sources
+from tools.business_info import build_business_tools
+from tools.datetime_tools import build_datetime_tools
 
 
 def build_agent_prompt(*, profile: dict, agent_id: int | None = None) -> dict:
@@ -81,9 +71,9 @@ def build_agent_prompt(*, profile: dict, agent_id: int | None = None) -> dict:
     instructions.append("- search_knowledge_base - the institution's knowledge library: policies, transport/bus service, fees, documents, facilities, and anything uploaded by staff. ALWAYS search it FIRST before answering any factual question about the institution, and ALWAYS search it before saying you don't have information. Answer from what it returns.")
     instructions.append("Use these tools to look up institution data when the user asks:")
     instructions.append("- get_business_locations / get_primary_business_location - for campus location, address, working hours, and holidays. operating_hours: {0=Mon..6=Sun, each: open/close HH:MM, is_closed bool}. special_holidays: multiline 'DD-MM-YYYY - Name'. For hours/availability: call get_current_day() for today, map day to int, check is_closed first, then compare time in 24hr (8pm=20:00). Always answer definitively with actual times.")
-    instructions.append("- get_fee_details(class_id) - the OFFICIAL fee chart for a class: receipt groups, installments, fee items, and exact amounts. ALWAYS use this for any fee/tuition/cost question about a specific class - pick class_id from the valid class list.")
-    instructions.append("- FEE CATEGORIES rule: the chart usually contains SEVERAL fee receipt categories (names differ per school - e.g. 'General - First Child', 'Staff - Second Child', 'Sponsor - ...'). NEVER list every category's fees and NEVER silently assume one. When more than one category exists in the tool result, first ask ONE short question to find which applies - derive it from the receipt names themselves, e.g. 'Is this your first, second or third child joining us? And does a staff or sponsor category apply to you?' - then present ONLY the matching category: its installments with amounts and a clear TOTAL. If the parent says nothing special applies, use the general first-child category. You may briefly mention a relevant benefit (e.g. sibling category when they register a second child), but never dump the whole chart.")
-    instructions.append("- get_inquiry_status(phone_number) - the LIVE status of existing admission inquiries for a mobile number. ALWAYS use this when the parent or student asks about the status/progress of their inquiry or admission - never guess a status. Report status_name in plain words; if next_followup_date is set, tell them our team plans to contact them around that date. If it returns nothing, say no inquiry was found for that number and offer to start one.")
+    instructions.append("- get_fee_details(class_id) - the OFFICIAL fee chart for a class: receipt groups, installments, fee items, and exact amounts. Use it ONLY when the parent has ASKED about fees, tuition, cost or a price - it answers a question, it is never volunteered. Learning which class a student is applying for is NOT a fee question: collecting the class is a flow step, so record it and move to the NEXT step, never to fees. When they DO ask, pick class_id from the valid class list; the class is the ONLY thing you need to quote fees, so if you do not know it yet ask just that one question and then answer - never ask for name, mobile, email or the admission details first.")
+    instructions.append("- FEE CATEGORIES rule: this applies ONLY once the parent has asked about fees and you are answering - never raise categories on your own, and never as the next step after they tell you the class. The chart usually contains SEVERAL fee receipt categories (names differ per school - e.g. 'General - First Child', 'Staff - Second Child', 'Sponsor - ...'). NEVER list every category's fees and NEVER silently assume one. When more than one category exists in the tool result, first ask ONE short question to find which applies - derive it from the receipt names themselves, e.g. 'Is this your first, second or third child joining us? And does a staff or sponsor category apply to you?' - then present ONLY the matching category: its installments with amounts and a clear TOTAL. If the parent says nothing special applies, use the general first-child category. You may briefly mention a relevant benefit (e.g. sibling category when they register a second child), but never dump the whole chart.")
+    instructions.append("- get_inquiry_status(phone_number) - the LIVE status of existing admission inquiries for a mobile number. ALWAYS use this when the parent or student asks about the status/progress of their inquiry or admission - never guess a status. The mobile number is the ONLY thing you need: use one already confirmed in this chat, otherwise ask for just that number and nothing else. Report status_name in plain words; if next_followup_date is set, tell them our team plans to contact them around that date. If it returns nothing, say no inquiry was found for that number and offer to start one.")
     instructions.append("- get_faqs - for frequently asked questions (documents, admission process)")
     instructions.append("- get_products / get_product_details - for programs, classes, and fee packages with exact pricing")
     instructions.append("- get_current_day - for getting the current day of the week")
@@ -145,6 +135,9 @@ def create_agent(*, agent_id: int | None = None) -> Agent:
         raise ValueError("No active AI profile found.")
 
     agent_config = build_agent_prompt(profile=profile, agent_id=agent_id)
+    # this school's own timezone - a group may have campuses in different
+    # regions, and it drives both the model's clock and the day tool
+    timezone = get_timezone(profile)
 
     # RAG: attach the per-agent Qdrant collection when configured; without
     # QDRANT_URL the agent runs tools-only (graceful degradation)
@@ -162,17 +155,11 @@ def create_agent(*, agent_id: int | None = None) -> Agent:
         knowledge=knowledge,
         search_knowledge=knowledge is not None,
         id=agent_config.get("id"),
+        # bound to THIS agent: a school's chat can only look up its own
+        # FAQs, campuses, products and sources - never the group's pool
         tools=[
-            get_business_locations,
-            get_business_location_by_name,
-            get_primary_business_location,
-            get_faqs,
-            get_products,
-            get_product_details,
-            get_fee_details,
-            get_inquiry_status,
-            get_current_day,
-            get_sources,
+            *build_business_tools(agent_id=agent_id),
+            *build_datetime_tools(timezone=timezone),
         ],
         db=agent_db,
         use_json_mode=False,
@@ -190,7 +177,7 @@ def create_agent(*, agent_id: int | None = None) -> Agent:
         add_name_to_context=True,
         add_datetime_to_context=False,
         add_location_to_context=False,
-        timezone_identifier=get_timezone(profile),
+        timezone_identifier=timezone,
         user_message_role="user",
         retries=1,
         delay_between_retries=1,

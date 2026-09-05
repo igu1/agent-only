@@ -115,6 +115,8 @@ async def _process(key: str, parts: list[str], job: dict) -> None:
         escalation_message_getter=escalation_message_getter,
         voice_audio_bytes=None,          # voice turns bypass the queue
         known_phone=job.get('known_phone'),
+        channel_type=job.get('channel_type'),
+        institution_id=job.get('institution_id'),
     )
 
 

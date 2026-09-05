@@ -8,6 +8,9 @@ from tools.getAi import (
     get_flow_nodes,
     get_flow_qa_examples,
     get_active_classes,
+    get_active_faqs,
+    get_active_knowledge_base,
+    get_active_locations,
     get_inquiry_types,
     get_relations,
     get_active_institutions,
@@ -69,37 +72,30 @@ def build_responsibilities_base_instructions() -> list[str]:
     return [
         "Responsibilities Base:",
         "- Ask only what is needed for the current step, one question at a time.",
-        "- Collect missing inquiry fields when naturally possible without being pushy: parent name, student name, class applying for, mobile number, email.",
-        "- ALL FIVE are required before the inquiry can be registered: parent name, student name, class, mobile number, AND email. Before wrapping up, check what is still missing and ask for it politely - an inquiry with a missing field is never recorded.",
+        "- ANSWER FIRST - a question is not an inquiry. Whenever the parent asks for information (fees, timings, documents, transport, facilities, classes, anything), answer it right there, at any point in the chat. NEVER make them give their name, mobile or email first, and never say the information comes only after they register. A parent may only ever want information and never register - that is fine; offer to start an inquiry once, politely, then drop it.",
+        "- COLLECT ONLY THE PARAMETER THAT ANSWER NEEDS: get_fee_details needs the class, get_inquiry_status needs the mobile number. Ask for THAT ONE thing in one short question, then answer - and if the conversation already holds it (a class named earlier, a number already confirmed), use it silently rather than asking again. Afterwards resume the flow exactly where it stopped with ONE natural next question; never restart it or re-ask what you have.",
+        "- Collect the inquiry fields naturally, without being pushy: parent name, student name, class applying for, mobile number, email. ALL FIVE are required before an inquiry can be registered - before wrapping up, check what is still missing and ask for it politely.",
         "- Emails NEVER contain spaces - if the typed email has one, join it and read the corrected address back for confirmation before setting lead.email. If what they gave does not look like a valid email at all, ask them to re-type it.",
-        "- The moment it becomes clear WHO the student is - including the chatter saying 'I am the student' - set lead.student_name to that name IN THE SAME TURN, never later.",
+        "- NAMES: lead.name is the PARENT'S name and lead.student_name is the STUDENT'S - never mix them up. The moment it is clear who the student is (including the chatter saying 'I am the student'), set lead.student_name in THAT SAME TURN, never later.",
         "- If this conversation already has details collected in an EARLIER session (a returning chat), read them back and confirm before proceeding: e.g. 'Last time I noted student X for class Y - shall I continue with that, or is this a new inquiry?' Never silently carry old details into a new request.",
-        "- The mobile number must include its country dialing code. If the parent gives a number in international format (starting with + or 00), accept it as-is.",
-        "- If the parent gives a LOCAL number (e.g. starting with 0, no country code), confirm the country code in the same reply, suggesting the local default: e.g. \"Just to confirm, is this a Saudi number (+966)?\" Accept whatever code they confirm.",
-        "- Always set lead.phone_number in full international format, e.g. +966501234567 or +919876543210 - country code, then the number without the leading 0.",
-        "- Right after the mobile number is confirmed, ask in the same reply whether that number is available on WhatsApp (e.g. \"Is this number also on WhatsApp?\"). Set whatsapp_opt_in true if they say yes, false if no. Ask this only ONCE; if they already said the number is a WhatsApp number, set it true without asking.",
-        "- If at ANY point (any channel) they say they do NOT want to be contacted on WhatsApp, dislike the messages, or ask to stop messaging them there, set whatsapp_opt_out=true, apologize briefly, and confirm they will not receive WhatsApp messages from us. Never set whatsapp_opt_out back to false unless they explicitly ask to receive WhatsApp messages again.",
-        "- Set lead.name to the PARENT'S name and lead.student_name to the STUDENT'S name - never mix them up.",
-        "- A parent may register MORE THAN ONE child. If they mention another/different child, treat it as a NEW inquiry: set lead.student_name to the new child's name and ASK that child's class fresh (set class_id only from their answer - never reuse the previous child's class). The system records each child as a separate inquiry; phone/email/OTP are NOT asked again.",
-        "- CORRECTION vs new child - decide carefully: if the parent is fixing the SAME child's name or spelling (e.g. 'sorry, it is Keven not Kevin'), set student_name to the corrected name AND student_name_correction=true - this is NOT a new child, keep the class as it is. Use student_name_correction ONLY for corrections, never when a different child is introduced. Corrections work only BEFORE the inquiry is submitted.",
-        "- AFTER the inquiry is submitted (verification completed), NO data can be changed in chat - any field, any channel. If the parent asks to change or correct something after submission (name, class, phone, email, anything): do NOT set any lead fields; politely explain that submitted details are updated by the admissions team, confirm you have passed the request on, and set escalation=true so staff see it. Registering ANOTHER child or a new season inquiry is still allowed - that is a new inquiry, not a change.",
-        "- Returning parent in a NEW admission season: re-confirm WHICH child and WHICH class this season (children move up a class each year) - never silently reuse last season's class. Once they confirm, set student_name and class_id again so a fresh inquiry is recorded.",
+        "- MOBILE NUMBER: always set lead.phone_number in full international format (e.g. +966501234567, +919876543210) - country code, then the number without its leading 0. A number given in international format (starting + or 00) is accepted as-is. For a LOCAL number, confirm the country code in the same reply, suggesting the local default: e.g. 'Just to confirm, is this a Saudi number (+966)?' - accept whatever they confirm.",
+        "- WHATSAPP CONSENT: right after the mobile is confirmed, ask in the same reply whether that number is on WhatsApp and set whatsapp_opt_in from their answer - ask only ONCE, and if they already said it is a WhatsApp number set it true without asking. If they EVER say they do not want WhatsApp contact or ask you to stop, set whatsapp_opt_out=true, apologise briefly and confirm - never set it back to false unless they ask to be contacted there again.",
+        "- ANOTHER CHILD = a NEW inquiry: set lead.student_name to the new child's name and ASK that child's class fresh - never reuse the previous child's class. Each child is recorded separately; phone, email and verification are NOT asked again. A returning parent in a NEW admission season must likewise re-confirm WHICH child and WHICH class: children move up a class each year, so never silently reuse last season's.",
+        "- CORRECTION vs new child: if they are fixing the SAME child's name or spelling ('sorry, it is Keven not Kevin'), set student_name to the corrected name AND student_name_correction=true - that is not a new child, so keep the class as it is. Use student_name_correction ONLY for corrections, never when a different child is introduced.",
+        "- DID-YOU-MEAN EMAIL: when the parent is asked 'did you mean <address>?' and they confirm (yes / correct / right / that one), set lead.email to THAT SUGGESTED address, exactly as it was offered. Never send the misspelled address again - repeating it just re-triggers the same question and traps them in a loop. If instead they say no or type a different address, use what they typed.",
+        "- Some messages are sent by the SYSTEM on your behalf (verification notices, the did-you-mean email question, success and refusal notices). They appear as your own words: never repeat them, and read the parent's next message as a reply to them.",
         "- Set class_id to the valid class ID matching what the parent asked for; if their answer doesn't match an available class, ask them to pick from the options.",
         "- Do NOT ask for the relation to the student; if the parent mentions it themselves (e.g., 'my daughter', 'I am her mother'), you may set lead.relation_id.",
         "- If user gives scheduling info, normalize into metadata using ISO formats.",
-        "- Re-rate the inquiry EVERY turn from the WHOLE conversation so far: interest_score 0-100, interest_level hot(70+)/warm(40-69)/cold(<40), and a one-line interest_reason. The score can go DOWN as well as up - always reflect the latest state, not an earlier peak. Never mention the score to the user.",
-        "- Answering your questions and sharing contact details is NOT an interest signal - every parent does that just to submit the inquiry. On its own that is warm at most (score <= 60), never hot.",
-        "- Hot (70+) requires real intent shown by the PARENT: asking about fees AND the admission process/documents, a clear admission timeline (e.g. this term/this year), asking to visit or to speak with staff, or pushing to complete admission now.",
-        "- Cold (<40): casual browsing, vague or reluctant answers, or the parent's need cannot be met (e.g. they want a language, curriculum, or facility the school does not offer). When the need cannot be met, LOWER the score and state the unmet need in interest_reason.",
-        "- interest_reason is a staff-facing one-liner describing where the parent actually stands, e.g. 'Asked fees and documents, wants admission this term' or 'Wanted Malayalam medium - not offered, unlikely to join'.",
+        "- Re-rate the inquiry EVERY turn from the WHOLE conversation: interest_score 0-100, interest_level hot(70+)/warm(40-69)/cold(<40), and a one-line staff-facing interest_reason saying where the parent actually stands (e.g. 'Asked fees and documents, wants admission this term'). The score can go DOWN as well as up - always the latest state, never an earlier peak. Never mention it to the user.",
+        "- Scoring: answering your questions and giving contact details is what every parent does to submit - on its own that is warm at most (<=60), never hot. HOT (70+) needs real intent from the PARENT: fees AND process/documents, a clear timeline, asking to visit or speak with staff, or pushing to finish now. COLD (<40): casual browsing, vague or reluctant answers, or a need the school cannot meet - state the unmet need in interest_reason.",
         "- Also produce suggested_reply every turn: the follow-up message a STAFF MEMBER could send this parent next, based on the whole conversation (2-4 warm sentences, ready to send as-is: greet by name, reference the student and the concrete next step or open question, no placeholders like [name]). Staff will edit it before sending - make it genuinely useful, not generic.",
         "- If the parent asks to be contacted on a specific date, set followup_date=YYYY-MM-DD.",
         "- Always set metadata.language to one of: english, arabic.",
-        "- If the parent types a numeric verification/OTP code (4-8 digits sent to their mobile), set otp_code to exactly that code. Never invent or guess a code. NEVER claim the code was accepted, that the record was updated, or that the inquiry is registered - you cannot know; the system checks the code and sends its own confirmation message.",
-        "- Never tell the parent their inquiry is 'registered' or 'submitted' - say their details are noted; the system confirms registration separately (a mobile verification step may follow).",
+        "- If the parent types a numeric verification code (4-8 digits), set otp_code to exactly that code. Never invent or guess one, and never claim it was accepted - the system checks it and sends its own confirmation.",
+        "- On a code-entry turn your reply is shown AFTER the system's own success message, which already says the inquiry is registered and the team will be in touch - so do not mention the code, the verification, or the team contacting them, do not recite facts unasked, and never invent any. Instead ask ONE short question offering areas your knowledge really covers, e.g. 'Meanwhile, can I help with the fee structure, transport, or our facilities?'",
         "- If they ask about the STATUS or progress of an existing inquiry/admission: call get_inquiry_status with the mobile number the inquiry was made with. If this conversation already has a known/confirmed number, use it without asking; otherwise ask which mobile number they registered with. Report the current status in plain words and, when next_followup_date is present, tell them the team plans to contact them around that date. Never invent a status. If several inquiries match, list each student with its status. If none match, say no inquiry was found for that number and offer to start one.",
-        "- SELF-INQUIRY (the STUDENT is chatting, not a parent): recognize it from what they say ('I want admission', 'I am the student', 'for myself'). Then: (1) put THEIR name in lead.student_name; (2) ask for their parent/guardian's name for lead.name - it is REQUIRED, an inquiry cannot be registered without it - e.g. 'May I have your parent or guardian's name for the admission record?'; (3) for mobile and email, prefer the parent/guardian's contact details for the official record, but accept the student's own if that is all they have; (4) address the student directly and warmly - never say 'your child' or assume a parent is present; (5) everything else (class, verification, status questions, fees) works exactly the same.",
-        "- If it is unclear whether you are talking to a parent or the student, the collected names make it obvious - never ask 'are you the parent or the student?' as a standalone question; infer it naturally.",
+        "- SELF-INQUIRY (the STUDENT is chatting, not a parent): recognise it from 'I want admission' / 'I am the student' / 'for myself'. Put THEIR name in lead.student_name; ask for their parent or guardian's name for lead.name - it is REQUIRED, an inquiry cannot be registered without it; prefer the guardian's mobile and email for the official record but accept the student's if that is all they have; address the student directly and warmly, never say 'your child'. Everything else works the same. Never ask 'are you the parent or the student?' as a standalone question - the collected names make it obvious.",
         "- If user asks for a human, set escalation=true.",
         "- When all needed details are collected and the conversation is finished, set is_chat_completed=true.",
     ]
@@ -225,10 +221,14 @@ def _build_dropdown_lines(*, agent_id: int | None = None) -> list[str]:
             f"{i['id']}={i.get('name', '')}" for i in institutions
         ))
         lines.append(
-            "IMPORTANT: This chat serves MULTIPLE institutions. Your FIRST question must be "
-            "which institution the parent is interested in; set institution_id from the list "
-            "above and only then continue collecting details. Classes below are labeled with "
-            "their institution - only offer classes belonging to the chosen institution."
+            "IMPORTANT: This chat serves MULTIPLE institutions. The visitor picks theirs from "
+            "a dropdown BEFORE the conversation starts, and the ROUTING line in the turn "
+            "context then names it. When that line is present the institution is ALREADY "
+            "SETTLED: never ask which institution/campus/college, never offer the list again - "
+            "just set institution_id to the id it gives. Only when NO routing line is present "
+            "(a channel with no picker) ask which institution as your first question and set "
+            "institution_id from the list above. Either way, classes are labeled with their "
+            "institution - only offer classes belonging to the chosen one."
         )
     classes = get_active_classes(agent_id=agent_id)
     if classes:
@@ -365,13 +365,14 @@ def build_flow_instructions(*, agent_id: int | None = None, flow: dict = None) -
         # content: flows are stored per institution only (no 0 rows), so the
         # unrouted company chat always gets this as its first step in code
         if agent_id == 0:
-            instructions.append(f"{step}. Ask which institution the parent is interested in and set institution_id from the valid institution list (required)")
+            instructions.append(f"{step}. Institution (required): if the turn context carries a ROUTING line, it was already chosen from the widget's dropdown - SKIP this step, do not ask, and set institution_id from that line. Only without a routing line, ask which institution the parent is interested in and set institution_id from the valid institution list")
             step += 1
         for node in nodes:
             req = " (required)" if node.get('is_required') else ""
             instructions.append(f"{step}. {node['node_text']}{req}")
             step += 1
         instructions.append("Rules: stay on current step; move next only after you got the answer; skip already-collected answers.")
+        instructions.append("A QUESTION IS NEVER OFF-STEP: if the parent asks something at any step, answer it first (collecting only the one parameter that answer's tool needs), then resume this step where it left off. Never withhold an answer until the steps are finished.")
 
     qa_examples = get_flow_qa_examples(flow['id'])
     if qa_examples:
@@ -400,11 +401,228 @@ def build_flow_instructions(*, agent_id: int | None = None, flow: dict = None) -
     return instructions
 
 
-def build_introduction(*, agent_id: int | None = None) -> str:
+# ── The new-chat greeting ────────────────────────────────────────────────
+# The first thing a parent reads, on every channel. It is SERVER-owned and
+# BUILT FROM LIVE DATA, never a hardcoded widget string: the topics come from
+# what this school actually has - the documents staff uploaded (their
+# categories/titles) plus the API-backed lookups that have rows - so adding a
+# transport policy or a new fee chart shows up in the greeting by itself.
+# A school that wants exact wording sets the flow's "introduction"; that wins.
+#
+# A company-level chat serves SEVERAL institutions, and nothing useful can be
+# promised before we know which one. That is settled OUTSIDE the conversation:
+# /session hands the widget the institution list, the visitor picks from a
+# dropdown, and only then is the real greeting built - naming that college and
+# offering what that college actually has. The chat itself never asks.
+
+# A topic must read as a LABEL, not a sentence. Character length alone was the
+# test, and at 28 it quietly threw away real document names - a school that
+# uploads "Admission Documents Required Checklist" got no mention of it at all,
+# which defeats the point of building the greeting from the documents. Word
+# count is the better test of "label vs sentence": four words is a title, a
+# dozen is prose, and it no longer punishes a school for being descriptive.
+_TOPIC_MAX_CHARS = 44
+_TOPIC_MAX_WORDS = 5
+_TOPIC_MAX_COUNT = 6           # read on a phone - stay one or two lines
+# category names that say nothing to a parent
+_TOPIC_SKIP = {'general', 'other', 'others', 'misc', 'miscellaneous', 'uncategorized', 'default'}
+
+
+def _clean_topic(label) -> str:
+    return ' '.join(str(label or '').split()).strip(' .,-:').lower()
+
+
+def _join_topics(topics: list[str]) -> str:
+    if len(topics) == 1:
+        return topics[0]
+    return ', '.join(topics[:-1]) + ' and ' + topics[-1]
+
+
+def _introduction_topics(*, agent_id: int | None = None, institution_id: int | None = None) -> list[str]:
+    """Concise labels for what this agent can really answer right now.
+
+    With an institution chosen, the class list narrows to that college - a
+    group agent must not promise what only a sister campus offers."""
+    topics: list[str] = []
+
+    def add(label) -> None:
+        cleaned = _clean_topic(label)
+        if (
+            cleaned
+            and len(cleaned) <= _TOPIC_MAX_CHARS
+            and len(cleaned.split()) <= _TOPIC_MAX_WORDS
+            and cleaned not in _TOPIC_SKIP
+            and cleaned not in topics
+        ):
+            topics.append(cleaned)
+
+    def safe(fn):
+        try:
+            return fn() or []
+        except Exception:
+            return []
+
+    # API-backed lookups - named only when this school has the rows for them
+    if safe(lambda: get_active_classes(agent_id=agent_id, institution_id=institution_id)):
+        add('classes')
+        add('fees')                      # fee charts hang off a class
+    if safe(lambda: get_active_locations(agent_id=agent_id)):
+        add('campus details')
+    if safe(lambda: get_active_faqs(agent_id=agent_id)):
+        add('admission process')
+
+    # documents staff uploaded - the category is the natural short title
+    for kb in safe(lambda: get_active_knowledge_base(agent_id=agent_id)):
+        if not isinstance(kb, dict):
+            continue
+        add(kb.get('category') or kb.get('title'))
+
+    return topics[:_TOPIC_MAX_COUNT]
+
+
+def build_institution_choices(*, agent_id: int | None = None) -> list[dict]:
+    """The institution dropdown, as data: [{"id": 3, "name": "..."}, ...].
+
+    Empty for an agent that serves ONE institution - there is nothing to pick
+    and the host page should show no dropdown at all.
+    """
+    choices: list[dict] = []
+    try:
+        rows = get_active_institutions(agent_id=agent_id) or []
+    except Exception:
+        return []
+    for row in rows:
+        if not isinstance(row, dict) or row.get('id') is None:
+            continue
+        try:
+            choices.append({'id': int(row['id']), 'name': str(row.get('name') or '').strip()})
+        except (TypeError, ValueError):
+            continue
+    return choices
+
+
+def get_institution_name(institution_id, *, agent_id: int | None = None) -> str:
+    """Display name for a chosen institution id ('' when it is unknown)."""
+    try:
+        wanted = int(institution_id)
+    except (TypeError, ValueError):
+        return ''
+    for choice in build_institution_choices(agent_id=agent_id):
+        if choice['id'] == wanted:
+            return choice['name']
+    return ''
+
+
+def _institution_agent_id(institution_id, *, agent_id: int | None = None) -> int | None:
+    """The school's OWN agent id, or None when it cannot be established.
+
+    Each school carries its own agent, holding the documents and FAQs its staff
+    uploaded; agent 0 is the COMPANY agent, whose knowledge base is the pooled
+    union across every school. Building a school's greeting from the pool makes
+    all of them advertise the same things - one school's transport policy shows
+    up in a sister campus's welcome.
+
+    The backend exposes no institution->agent link, so the id is confirmed by
+    NAME: the candidate agent's profile must carry exactly this institution's
+    name. A mismatch (or a backend that numbers them differently) returns None
+    and the caller falls back to the company agent - never wrong content, just
+    less specific.
+    """
+    name = get_institution_name(institution_id, agent_id=agent_id)
+    if not name:
+        return None
+    try:
+        candidate = int(institution_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        profile = get_active_profile(agent_id=candidate) or {}
+    except Exception:
+        return None
+    business = ' '.join(str(profile.get('business_name') or '').split()).casefold()
+    return candidate if business and business == ' '.join(name.split()).casefold() else None
+
+
+def resolve_institution_agent_id(institution_id, *, agent_id: int | None = None) -> int | None:
+    """Public form of the lookup above: which agent should SERVE a conversation
+    about this institution. None means stay on the channel's own agent."""
+    return _institution_agent_id(institution_id, agent_id=agent_id)
+
+
+def _greeting_subject(*, agent_id: int | None = None, institution_id: int | None = None) -> str:
+    """Who the parent is being welcomed BY: the chosen college when the page
+    already picked one, otherwise the organization on the AI profile."""
+    name = get_institution_name(institution_id, agent_id=agent_id) if institution_id is not None else ''
+    if name:
+        return name
+    try:
+        business = str((get_profile(agent_id=agent_id) or {}).get('business_name') or '').strip()
+    except Exception:
+        return ''
+    # the API's placeholder profile is not a school name - never greet with it
+    return '' if business.lower() in ('', 'cronomind ai') else business
+
+
+def build_introduction(*, agent_id: int | None = None, institution_id: int | None = None) -> str:
+    """The warm welcome. With the institution already chosen on the page it
+    names that college and offers only what that college has."""
     flow = get_flows(agent_id=agent_id)
     intro = (flow or {}).get("introduction")
-    if not intro:
-        return ""
-    return str(intro).strip()
+    intro = str(intro).strip() if intro else ""
+    if intro:
+        return intro
+
+    # Read the topics from the SCHOOL's agent when there is one: its documents
+    # and FAQs are what this parent can actually be helped with. Falls back to
+    # the agent that owns the channel.
+    source_agent = _institution_agent_id(institution_id, agent_id=agent_id)
+    if source_agent is None:
+        source_agent = agent_id
+    topics = _introduction_topics(agent_id=source_agent, institution_id=institution_id)
+    what = _join_topics(topics) if topics else 'admissions questions'
+    subject = _greeting_subject(agent_id=agent_id, institution_id=institution_id)
+    opening = f"Welcome to {subject}! " if subject else "Hi! "
+    return (
+        f"{opening}I'm the admissions assistant. I can help with {what}, "
+        "start an admission inquiry for you, or check one you've already "
+        "made. How can I help?"
+    )
+
+
+def build_institution_prompt(*, agent_id: int | None = None) -> str:
+    """FALLBACK greeting for a multi-institution chat that arrived WITHOUT a
+    choice - a host page that shows no dropdown, or a channel that cannot
+    (WhatsApp). It welcomes and asks the one routing question; everywhere the
+    page passes institution_id this text is never used."""
+    subject = _greeting_subject(agent_id=agent_id)
+    opening = f"Welcome to {subject}! " if subject else "Hi! "
+    lines = [
+        f"{opening}I'm the admissions assistant. To give you the right details, "
+        "please tell me which campus you are asking about:"
+    ]
+    lines += [
+        f"{n}. {c['name']}"
+        for n, c in enumerate(build_institution_choices(agent_id=agent_id), 1)
+    ]
+    return "\n".join(lines)
+
+
+# ── Institution routing, settled BEFORE the chat ─────────────────────────
+# The institution is picked once on the inquiry page (the login-time dropdown)
+# and travels with every message, so the assistant is TOLD which college it is
+# serving instead of asking. This line is written into the turn context the
+# same way STAGE is: one authoritative fact the model cannot drift from, which
+# beats any amount of "do not ask again" prose in the static prompt.
+
+def build_routing_context(institution_id, *, agent_id: int | None = None) -> str:
+    name = get_institution_name(institution_id, agent_id=agent_id)
+    label = f"{institution_id} ({name})" if name else str(institution_id)
+    return (
+        f"ROUTING: the institution was already chosen before this chat started - "
+        f"institution_id {label}. It is SETTLED: NEVER ask which institution, campus, "
+        f"college or branch, never present the institution list, and never ask them to "
+        f"confirm it. Set institution_id to exactly {institution_id} in every response, "
+        f"answer only about this institution, and offer only its classes."
+    )
 
 

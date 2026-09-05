@@ -29,6 +29,8 @@ services:
       - .env
     environment:
       - PYTHONPATH=/app/agent
+      # container-side view of the host's .NET API (see base compose note)
+      - DJANGO_INTERNAL_URL=http://host.docker.internal:5200
       - QDRANT_URL=http://qdrant:6333
       - TENANTS_FILE=/app/agent/tenants.json
       - QUEUE_MODE=redis
@@ -38,6 +40,14 @@ services:
       - agent_mem:/app/agent/mem
       - ./tenants.json:/app/agent/tenants.json:ro
     depends_on: [qdrant, redis]
+    # the image's HEALTHCHECK curls the HTTP port, which a worker doesn't
+    # serve - probe the loop's heartbeat file instead (same as the k8s probe)
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(stat -c %Y /tmp/worker-heartbeat) )) -lt 120 ]"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
   redis:
     image: redis:7-alpine

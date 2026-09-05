@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admissions assistant widget — demo</title>
+<style>
+  body { margin:0; font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; color:#1a2622;
+         background:#faf9f6; }
+  main { max-width:720px; margin:0 auto; padding:56px 24px 160px; }
+  h1 { font-size:28px; margin:0 0 6px; }
+  p.lead { color:#5d6b66; margin:0 0 28px; }
+  section { background:#fff; border:1px solid #e3e1da; border-radius:12px; padding:18px 20px; margin:0 0 16px; }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.05em; color:#5d6b66; margin:0 0 10px; }
+  code, pre { font-family:ui-monospace,"Cascadia Code",Consolas,monospace; font-size:13.5px; }
+  pre { background:#f4f5f4; border:1px solid #e3e1da; border-radius:8px; padding:12px; overflow-x:auto; }
+  ol { margin:0; padding-left:20px; }
+  li { margin:4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Admissions assistant — widget demo</h1>
+  <p class="lead">The launcher is bottom-right. Open it to see the new-conversation flow.</p>
+
+  <section>
+    <h2>What to expect</h2>
+    <ol>
+      <li>Click the bubble — the popup opens on a <strong>warm welcome plus the campus dropdown</strong>, not on a text box.</li>
+      <li>Pick a campus and press Continue — the greeting is rebuilt for that college and the composer unlocks.</li>
+      <li>Every message now carries that <code>institution_id</code>, so the assistant never asks which college.</li>
+      <li>The ↻ button in the header starts a new conversation and brings the picker back.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Single-institution school</h2>
+    <p>No dropdown at all. The server returns an empty <code>institutions</code> list, and the panel opens
+       straight onto the greeting.</p>
+  </section>
+
+  <section>
+    <h2>Page already knows the college</h2>
+    <p>The inquiry page has its own login-time dropdown — pass the choice and the picker never appears:</p>
+<pre>&lt;script src="webchat-widget.js"
+        data-agent="http://127.0.0.1:8001"
+        data-channel="1"
+        data-institution="3"&gt;&lt;/script&gt;</pre>
+    <p>Or at runtime, before opening: <code>CronoWebchat.setInstitution(3)</code>.</p>
+  </section>
+</main>
+
+<!-- point data-agent at the running agent service (dev-run.ps1 default: 8001) -->
+<script src="webchat-widget.js"
+        data-agent="http://127.0.0.1:8001"
+        data-channel="1"
+        data-title="Admissions assistant"
+        data-subtitle="Ask about fees, documents or admission"></script>
+</body>
+</html>

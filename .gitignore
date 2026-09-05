@@ -8,3 +8,10 @@ mem/*.sqlite3
 deploy/saas/.env
 deploy/saas/tenants.json
 deploy/k8s/secrets.yaml
+
+# local virtualenv - recreated by dev-run.ps1
+venv/
+.venv/
+
+# memory-store backups (mem/*.sqlite3 is already ignored; .bak copies are not)
+mem/*.sqlite3.bak*

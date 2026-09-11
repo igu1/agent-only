@@ -57,9 +57,11 @@ def update_lead_from_payload(*, lead_id: int, payload: dict) -> dict:
             'lead_id': int(lead_id),
             **{k: v for k, v in payload.items() if v is not None},
         }) or {}
-    except Exception:
+    except Exception as e:
         logging.exception("update_lead_from_payload API call failed (lead_id=%s)", lead_id)
-        return {}
+        # NOT {} - an empty dict is how a turn with no lead fields looks, and
+        # the caller must be able to tell "nothing to save" from "saving broke"
+        return {"ok": False, "status": 500, "error": str(e)}
 
 
 def update_lead_ai_summary(*, lead_id: int, ai_summary: str | None) -> bool:

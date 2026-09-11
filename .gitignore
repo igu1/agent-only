@@ -1,17 +1,33 @@
+# ── secrets ───────────────────────────────────────────────────────────────
 .env
 tenants.json
-__pycache__/
-*.pyc
-logs/
-mem/*.sqlite3
 # secret-bearing deploy files (templates/examples ARE tracked)
 deploy/saas/.env
 deploy/saas/tenants.json
 deploy/k8s/secrets.yaml
 
+# ── chat memory ───────────────────────────────────────────────────────────
+# A CACHE of the model's working memory - every message is already in
+# CmpAgentMessage and every inquiry in CmpRegistration on the org's own SQL
+# Server. It needs no backup, and it holds parents' names, phone numbers and
+# email addresses in an unencrypted file, so it does not belong in a repo.
+mem/*.sqlite3
+mem/*.sqlite3.bak*
+mem/*.sqlite3-wal
+mem/*.sqlite3-shm
+
+# ── customer documents ────────────────────────────────────────────────────
+# One organization's handbook, fee sheet or policy PDF is that customer's
+# material, not ours to ship. .dockerignore excludes them from the image for
+# the same reason; this keeps them out of the repository as well. Upload them
+# per organization and index them into that org's own Qdrant collection.
+static/*.pdf
+
+# ── build / runtime noise ─────────────────────────────────────────────────
+__pycache__/
+*.pyc
+logs/
+
 # local virtualenv - recreated by dev-run.ps1
 venv/
 .venv/
-
-# memory-store backups (mem/*.sqlite3 is already ignored; .bak copies are not)
-mem/*.sqlite3.bak*

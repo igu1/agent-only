@@ -149,5 +149,195 @@ class TestDatetimeTools(unittest.TestCase):
         self.assertIn('never raise categories on your own', categories)
 
 
+    @patch('core.manager.get_profile')
+    @patch('core.manager.get_flows')
+    @patch('core.manager.get_model')
+    @patch('core.manager.Agent')
+    def test_the_real_class_list_is_in_the_conversation(self, mock_agent_class,
+                                                        mock_get_model, mock_get_flows,
+                                                        mock_get_profile):
+        """A school offering Grade 1-6 was told to parents as "Kindergarten
+        (Nursery-UKG) and Grades 1-10". The list reached the model only as valid
+        ids for a JSON field, which it read as output formatting rather than as
+        the vocabulary it may speak."""
+        mock_get_profile.return_value = {'business_name': 'Model Girls School'}
+        mock_get_flows.return_value = {}
+        mock_get_model.return_value = MagicMock()
+
+        classes = [{'id': 44, 'name': 'Grade 1'}, {'id': 45, 'name': 'Grade 2'}]
+        with offline_backend(), \
+             patch('infra.profile.get_active_classes', lambda **kw: classes):
+            create_agent(agent_id=2)
+
+        _, kwargs = mock_agent_class.call_args
+        prompt = '\n'.join(kwargs.get('instructions') or [])
+        self.assertIn('CLASSES - the complete list this school offers: Grade 1, Grade 2.',
+                      prompt)
+        self.assertIn('never invent a range', prompt.lower())
+        self.assertIn('Do NOT accept it, do NOT set class_id', prompt)
+
+    @patch('core.manager.get_profile')
+    @patch('core.manager.get_flows')
+    @patch('core.manager.get_model')
+    @patch('core.manager.Agent')
+    def test_answering_outranks_the_numbered_steps(self, mock_agent_class,
+                                                   mock_get_model, mock_get_flows,
+                                                   mock_get_profile):
+        """"What is the admission process?" was answered with "Could I please
+        start by getting your name?" - the numbered steps beat a rule that never
+        said it outranked them."""
+        mock_get_profile.return_value = {'business_name': 'Test Business'}
+        mock_get_flows.return_value = {}
+        mock_get_model.return_value = MagicMock()
+
+        with offline_backend():
+            create_agent(agent_id=1)
+
+        _, kwargs = mock_agent_class.call_args
+        prompt = '\n'.join(kwargs.get('instructions') or [])
+        self.assertIn('THIS OUTRANKS THE NUMBERED STEPS', prompt)
+        self.assertIn('ASKING ABOUT THE PROCESS IS NOT A REQUEST TO START IT', prompt)
+
+
+    @patch('core.manager.get_profile')
+    @patch('core.manager.get_flows')
+    @patch('core.manager.get_model')
+    @patch('core.manager.Agent')
+    def test_the_sibling_flow_asks_only_child_and_class(self, mock_agent_class,
+                                                        mock_get_model, mock_get_flows,
+                                                        mock_get_profile):
+        """A second child inherits the parent, contacts and verification, so the
+        only new facts are the child and the class."""
+        mock_get_profile.return_value = {'business_name': 'Test Business'}
+        mock_get_flows.return_value = {}
+        mock_get_model.return_value = MagicMock()
+        with offline_backend():
+            create_agent(agent_id=1)
+        _, kwargs = mock_agent_class.call_args
+        prompt = '\n'.join(kwargs.get('instructions') or [])
+
+        self.assertIn('SECOND CHILD (the sibling flow):', prompt)
+        self.assertIn("Ask ONLY two things", prompt)
+        self.assertIn('never ask for any of them again', prompt)
+
+    @patch('core.manager.get_profile')
+    @patch('core.manager.get_flows')
+    @patch('core.manager.get_model')
+    @patch('core.manager.Agent')
+    def test_reused_contacts_are_announced(self, mock_agent_class, mock_get_model,
+                                           mock_get_flows, mock_get_profile):
+        """Silently reusing them is why a parent needing a different contact for
+        one child had no way to say so."""
+        mock_get_profile.return_value = {'business_name': 'Test Business'}
+        mock_get_flows.return_value = {}
+        mock_get_model.return_value = MagicMock()
+        with offline_backend():
+            create_agent(agent_id=1)
+        _, kwargs = mock_agent_class.call_args
+        prompt = '\n'.join(kwargs.get('instructions') or [])
+
+        self.assertIn('SAY that you are reusing them', prompt)
+        self.assertIn('same mobile number and email', prompt)
+
+    @patch('core.manager.get_profile')
+    @patch('core.manager.get_flows')
+    @patch('core.manager.get_model')
+    @patch('core.manager.Agent')
+    def test_the_summary_is_shown_before_registering(self, mock_agent_class,
+                                                     mock_get_model, mock_get_flows,
+                                                     mock_get_profile):
+        """The OTP notice was the only review any inquiry got, and it only
+        appears where the school requires a code - so schools with OTP off,
+        and every sibling everywhere, registered unseen."""
+        mock_get_profile.return_value = {'business_name': 'Test Business'}
+        mock_get_flows.return_value = {}
+        mock_get_model.return_value = MagicMock()
+        with offline_backend():
+            create_agent(agent_id=1)
+        _, kwargs = mock_agent_class.call_args
+        prompt = '\n'.join(kwargs.get('instructions') or [])
+
+        self.assertIn('CONFIRM BEFORE REGISTERING - this applies to EVERY inquiry:',
+                      prompt)
+        for field in ('parent', 'student', 'class', 'mobile', 'email'):
+            self.assertIn(field, prompt.lower())
+        self.assertIn('Shall I register that?', prompt)
+
+    @patch('core.manager.get_profile')
+    @patch('core.manager.get_flows')
+    @patch('core.manager.get_model')
+    @patch('core.manager.Agent')
+    def test_the_confirmation_is_reported_only_when_the_parent_gives_it(
+            self, mock_agent_class, mock_get_model, mock_get_flows, mock_get_profile):
+        """details_confirmed is a REPORT of what the parent said, not a
+        judgement about whether the details look complete - the server reads it
+        as consent, so a model inferring it registers a child who never
+        agreed."""
+        mock_get_profile.return_value = {'business_name': 'Test Business'}
+        mock_get_flows.return_value = {}
+        mock_get_model.return_value = MagicMock()
+        with offline_backend():
+            create_agent(agent_id=1)
+        _, kwargs = mock_agent_class.call_args
+        prompt = '\n'.join(kwargs.get('instructions') or [])
+
+        self.assertIn('SET details_confirmed: true ONLY in the turn where the '
+                      'parent has just said yes', prompt)
+        self.assertIn('never your own judgement that the details look complete',
+                      prompt)
+        self.assertIn('A CORRECTION IS NOT A CONFIRMATION', prompt)
+        self.assertIn('set details_confirmed: false', prompt)
+        self.assertIn('Never send a correction and a confirmation in the same turn',
+                      prompt)
+
+    @patch('core.manager.get_profile')
+    @patch('core.manager.get_flows')
+    @patch('core.manager.get_model')
+    @patch('core.manager.Agent')
+    def test_an_abandoned_confirmation_still_leaves_the_details(self, mock_agent_class,
+                                                                mock_get_model,
+                                                                mock_get_flows,
+                                                                mock_get_profile):
+        """A parent who stops replying after the summary is a warm lead, and
+        staff can only follow it up if the record has their details - the class
+        included. Nothing needs withholding now that the server holds
+        creation."""
+        mock_get_profile.return_value = {'business_name': 'Test Business'}
+        mock_get_flows.return_value = {}
+        mock_get_model.return_value = MagicMock()
+        with offline_backend():
+            create_agent(agent_id=1)
+        _, kwargs = mock_agent_class.call_args
+        prompt = '\n'.join(kwargs.get('instructions') or [])
+
+        self.assertIn('Keep setting every field as you collect it, including class_id',
+                      prompt)
+        self.assertIn('stops replying after the summary still leaves their details',
+                      prompt)
+
+    @patch('core.manager.get_profile')
+    @patch('core.manager.get_flows')
+    @patch('core.manager.get_model')
+    @patch('core.manager.Agent')
+    def test_verification_is_reused_but_a_changed_contact_is_not(self, mock_agent_class,
+                                                                 mock_get_model,
+                                                                 mock_get_flows,
+                                                                 mock_get_profile):
+        """Proof belongs to a contact, not to a child: unchanged contacts keep
+        their proof, a changed one has none, and a channel-proven mobile is
+        never re-verified."""
+        mock_get_profile.return_value = {'business_name': 'Test Business'}
+        mock_get_flows.return_value = {}
+        mock_get_model.return_value = MagicMock()
+        with offline_backend():
+            create_agent(agent_id=1)
+        _, kwargs = mock_agent_class.call_args
+        prompt = '\n'.join(kwargs.get('instructions') or [])
+
+        self.assertIn('reused verification covers the reused contacts ONLY', prompt)
+        self.assertIn('let the system verify the changed one', prompt)
+        self.assertIn('never re-verify that', prompt)
+
+
 if __name__ == '__main__':
     unittest.main()

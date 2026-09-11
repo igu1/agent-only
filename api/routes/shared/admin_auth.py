@@ -25,3 +25,24 @@ def require_admin_token(x_agent_token: str | None = Header(default=None)) -> Non
         return
     if provided != expected:
         raise HTTPException(status_code=401, detail='Unauthorized')
+
+
+def require_org_token() -> None:
+    """Org-scoped admin endpoints must know WHOSE data they are touching.
+
+    An org's own token names its organisation; the shared operator token does
+    not. It authenticates fine, so without this the call proceeds as the
+    default tenant - reindexing the default organisation's Qdrant collections
+    while the caller meant their own. Under strict tenancy, say so instead.
+
+    Depends on require_admin_token having run first (list it first in the
+    endpoint's dependencies): that is what resolves the org.
+    """
+    from infra.tenants import org_resolved, strict_tenancy
+
+    if strict_tenancy() and not org_resolved():
+        raise HTTPException(
+            status_code=400,
+            detail=("organization could not be determined - call this with the "
+                    "organization's own X-Agent-Token from tenants.json, not "
+                    "the shared operator token"))

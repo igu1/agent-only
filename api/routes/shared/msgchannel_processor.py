@@ -123,6 +123,12 @@ STAGE_SUBMITTED = 'submitted'
 
 _STAGE_KEY = 'admission_stage'
 
+# Statuses meaning "the backend never took it", as opposed to "the backend
+# considered it and said no". Mirrors the set in generic_webhook rather than
+# importing it - that module imports this one, and a cycle is a worse price
+# than four repeated numbers.
+_TEMPORARY_BACKEND_FAILURES = frozenset({500, 502, 503, 504})
+
 # One authoritative line per stage. This is what the model acts on - it beats
 # any number of prose rules because it cannot drift from the backend.
 STAGE_CONTEXT = {
@@ -131,7 +137,7 @@ STAGE_CONTEXT = {
         "submitted yet. Keep gathering the inquiry details, and answer any "
         "question the parent asks along the way. Never tell them their inquiry "
         "is 'registered' or 'submitted' - say their details are noted; the "
-        "system confirms registration separately once they verify."
+        "system confirms registration separately."
     ),
     STAGE_AWAITING_VERIFICATION: (
         "STAGE: awaiting_verification - a verification code has been sent and is "
@@ -140,17 +146,78 @@ STAGE_CONTEXT = {
         "correction and set the field - the system re-verifies and sends a fresh "
         "code by itself. NEVER tell them the inquiry is submitted, that details "
         "are locked, or that only staff can change them. If they type digits, "
-        "that is the code: put it in otp_code."
+        "that is the code: put it in otp_code. "
+        "If they say the code never arrived or ask for another one, set "
+        "otp_resend_requested: true and say nothing about having sent it - the "
+        "system issues the code and reports back itself. Do NOT set it for an "
+        "ordinary question: answer that normally, the code stays valid while "
+        "you do."
     ),
     STAGE_SUBMITTED: (
         "STAGE: submitted - verification is complete and the inquiry is recorded. "
         "Details can no longer be changed in chat, in any field or any channel: "
-        "if they ask for a change, do NOT set any lead field - set escalation=true "
-        "and tell them the admissions team will make the correction. "
+        "if they ask for a change, do NOT set any lead field. Tell them plainly "
+        "that the inquiry is already submitted so its details cannot be changed "
+        "here, and that our admissions team handles corrections once an inquiry "
+        "is in - then offer to help with anything else. "
+        "Do NOT set escalation for this: a parent correcting a detail has not "
+        "asked for a person, and escalating ends the conversation for them. "
+        "Set escalation=true only when they ASK to speak to someone, or when you "
+        "genuinely cannot help with what they need. "
         "Registering ANOTHER child or a new season inquiry is still allowed - "
         "that is a new inquiry, not a change."
     ),
 }
+
+
+# Whether THIS school verifies with a code at all (IsOTPForInquiry), which is
+# not the same question as "is a code outstanding right now". The model writes
+# its reply BEFORE the backend call, so on the turn the parent says "yes,
+# register it" it has to already know - otherwise it fills the gap itself, and
+# it filled it with a code that a no-OTP school never sends.
+_VERIFIES_KEY = 'institution_verifies'
+
+VERIFY_CONTEXT = {
+    True: (
+        " This school DOES verify: after they confirm, the system sends a code "
+        "and says so itself - do not announce it before it has."
+    ),
+    False: (
+        " This school does NOT verify with a code. Never mention a code, an OTP "
+        "or verification, and never ask them to enter one - there is none. Once "
+        "they confirm, the system registers the inquiry and says so itself."
+    ),
+}
+
+
+def load_verifies(agent, session_id: str):
+    """Whether this school verifies, as last reported by the backend."""
+    try:
+        state = agent.get_session_state(session_id=session_id) or {}
+        value = state.get(_VERIFIES_KEY)
+        return bool(value) if value is not None else None
+    except Exception as e:
+        _ = e
+        return None
+
+
+def save_verifies(agent, session_id: str, verifies: bool) -> None:
+    try:
+        agent.update_session_state({_VERIFIES_KEY: bool(verifies)}, session_id=session_id)
+    except Exception as e:
+        _ = e
+
+
+def stage_context(stage: str, verifies=None) -> str:
+    """The stage line, plus what this school does about verification.
+
+    Only `collecting` carries it: by awaiting_verification a code demonstrably
+    exists, and by submitted it no longer matters.
+    """
+    line = STAGE_CONTEXT.get(stage, STAGE_CONTEXT[STAGE_COLLECTING])
+    if stage == STAGE_COLLECTING and verifies is not None:
+        line += VERIFY_CONTEXT[bool(verifies)]
+    return line
 
 
 def compute_stage(update_resp: dict, *, previous: str | None = None) -> str:
@@ -263,7 +330,7 @@ async def _send_escalation(
     *,
     lead_id: int,
     escalation_message: str,
-    send_message: Callable[[str], Awaitable[None]],
+    send_message: Callable[[str], Awaitable[bool]],
 ) -> tuple[int | None, int | None]:
     org_id = None
     try:
@@ -276,8 +343,8 @@ async def _send_escalation(
     except Exception as e:
         _ = e
 
-    await send_message(escalation_message)
-    save_message(lead_id=int(lead_id), content=escalation_message, sender_type='ai')
+    if await send_message(escalation_message):
+        save_message(lead_id=int(lead_id), content=escalation_message, sender_type='ai')
     return lead_id, org_id
 
 
@@ -328,7 +395,7 @@ async def handle_agent_batch(
     session_id: str,
     lead_id: int,
     channel_agent_id: int,
-    send_message: Callable[[str], Awaitable[None]],
+    send_message: Callable[[str], Awaitable[bool]],
     escalation_message_getter: Callable[[], str],
     voice_audio_bytes: bytes | None = None,
     known_phone: str | None = None,
@@ -342,8 +409,8 @@ async def handle_agent_batch(
     # Voice message handling
     if is_voice and not supports_audio():
         unsupported_msg = "Voice messages are not supported yet."
-        await send_message(unsupported_msg)
-        save_message(lead_id=lead_id, content=unsupported_msg, sender_type='ai')
+        if await send_message(unsupported_msg):
+            save_message(lead_id=lead_id, content=unsupported_msg, sender_type='ai')
         return
 
     try:
@@ -355,7 +422,27 @@ async def handle_agent_batch(
     # keeps it, so a widget that forgets to resend the id cannot un-route a
     # conversation halfway through.
     stored_institution = load_institution(agent, session_id)
-    institution = _to_int(institution_id) or stored_institution
+    candidate = _to_int(institution_id)
+    # Web chat is the one channel where this number came from a BROWSER: its
+    # adapter reads institution_id out of the POST body, while every other
+    # channel derives it from the channel binding, which the server owns. A
+    # public widget endpoint means anyone can post any integer, so the client's
+    # answer gets exactly the check the MODEL's answer already gets below - and
+    # the channel's own answer, being authoritative, is left alone. That
+    # distinction matters: an institution-scoped agent has an EMPTY choice
+    # list, so validating the channel's value would reject it and send the
+    # conversation back to the pooled company agent.
+    if candidate is not None and channel_type == 'webchat':
+        try:
+            from infra.profile import get_institution_name
+            if not get_institution_name(candidate, agent_id=channel_agent_id):
+                candidate = None
+        except Exception as e:
+            # unverifiable is not the same as valid - drop it and keep whatever
+            # this conversation already had
+            _ = e
+            candidate = None
+    institution = candidate or stored_institution
     if institution is not None and institution != stored_institution:
         save_institution(agent, session_id, institution)
 
@@ -399,18 +486,25 @@ async def handle_agent_batch(
         from infra.profile import build_introduction
         intro = build_introduction(agent_id=serving_agent_id, institution_id=institution)
         if intro:
-            await send_message(intro)
-            save_message(lead_id=lead_id, content=intro, sender_type='ai')
+            if await send_message(intro):
+                save_message(lead_id=lead_id, content=intro, sender_type='ai')
             # agno seeds `introduction` into a brand-new session by itself, so
             # this one is already in history - nothing to remember here.
 
-    async def send_server_message(text: str) -> None:
+    async def send_server_message(text: str) -> bool:
         """Deliver a message the SERVER authored: to the parent, to the CRM
         transcript, and into the agent's history so the next turn knows what
-        the parent is replying to."""
-        await send_message(text)
+        the parent is replying to.
+
+        All three or none. Recording a message the channel refused would tell
+        staff the parent had been answered, and would tell the NEXT turn the
+        parent already knows something they were never told.
+        """
+        if not await send_message(text):
+            return False
         save_message(lead_id=lead_id, content=text, sender_type='ai')
         _remember_server_message(agent, session_id, text)
+        return True
 
     run_kwargs: dict = dict(user_id=user_id, session_id=session_id, debug_mode=False)
 
@@ -426,8 +520,10 @@ async def handle_agent_batch(
     date_context = f"Context: Today is {current_date} and current time is {current_time} ({tz_name}, {current_datetime})."
 
     # what the BACKEND says this conversation is - not what the model infers
+    # ...and what it says this SCHOOL does about verification, for the same
+    # reason: an inference the model redoes each turn eventually drifts
     stage = load_stage(agent, session_id)
-    date_context += "\n" + STAGE_CONTEXT[stage]
+    date_context += "\n" + stage_context(stage, load_verifies(agent, session_id))
 
     # which college was chosen on the page - so the assistant never asks
     if institution is not None:
@@ -499,9 +595,22 @@ async def handle_agent_batch(
         'interest_score', 'interest_level', 'interest_reason',
         'followup_date', 'otp_code', 'whatsapp_opt_in',
         'student_name_correction', 'suggested_reply',
+        # the assistant's own report of a promise it just made - the only thing
+        # that puts an unanswerable question in front of staff
+        'promised_staff_followup',
     ):
         if data.get(field) is not None:
             lead_payload[field] = data[field]
+    # details_confirmed is forwarded even when False: null means "the model
+    # said nothing this turn" and leaves the stored flag alone, while false is
+    # the parent withdrawing it. Folding the two together would let a
+    # correction keep a stale confirmation alive.
+    if data.get('details_confirmed') is not None:
+        lead_payload['details_confirmed'] = bool(data['details_confirmed'])
+    # only true is meaningful: not asking for a code is not the same as asking
+    # us not to send one, so false is simply left out
+    if data.get('otp_resend_requested'):
+        lead_payload['otp_resend_requested'] = True
     # the routed institution is the PAGE's answer, not the model's guess: it
     # overrides whatever the model put in institution_id, so an inquiry can
     # never be filed against the wrong college
@@ -552,6 +661,36 @@ async def handle_agent_batch(
     next_stage = compute_stage(update_resp, previous=stage)
     if next_stage != stage:
         save_stage(agent, session_id, next_stage)
+    # the school's posture travels on the same response; remembered so the NEXT
+    # turn's prompt already carries it - by the confirming turn the backend has
+    # reported it many times over
+    if update_resp.get('institution_verifies') is not None:
+        save_verifies(agent, session_id, bool(update_resp['institution_verifies']))
+
+    # CLOSING ON NOTHING. A chat that produced an inquiry has moved to
+    # awaiting_verification or submitted; still collecting means the backend
+    # created nothing - typically because a required field never made it,
+    # like a class the model accepted but could not map to a real one. The
+    # model cannot see that, so it signs off ("your details have been noted,
+    # our team will be in touch") and the parent waits for a call that will
+    # never come. The stage is the only thing that knows, so it decides.
+    premature_close = bool(data.get('is_chat_completed')) and next_stage == STAGE_COLLECTING
+    if premature_close:
+        # the CRM was just told this conversation is finished - take it back,
+        # or staff see a closed chat with no inquiry behind it
+        try:
+            update_lead_from_payload(lead_id=lead_id, payload={'is_chat_completed': False})
+        except Exception as e:
+            _ = e
+        logger_msg = (
+            "Conversation %s: the AI closed a chat with no inquiry created "
+            "(stage still collecting) - closing message suppressed."
+        )
+        try:
+            import logging
+            logging.getLogger(__name__).warning(logger_msg, session_id)
+        except Exception as e:
+            _ = e
 
     if bool(data.get('escalation')):
         escalation_message = data.get('message', '') or escalation_message_getter()
@@ -572,7 +711,15 @@ async def handle_agent_batch(
     # inquiry were finished, directly contradicting the review-and-verify
     # message that follows it - the server's message is the only one sent
     otp_failed_turn = bool(update_resp.get('otp_required')) and \
-        update_resp.get('otp_notice') in ('new', 'retry', 'renewed')
+        update_resp.get('otp_notice') in (
+            'new', 'retry', 'renewed',
+            # a code was generated but the sender could not deliver it - the
+            # model would happily say it was sent
+            'send_failed',
+            # the resend verdicts: the model asked for a code but does not know
+            # whether it was issued, refused, or failed to send - only the
+            # server does, so only the server tells the parent
+            'resent', 'resend_too_soon', 'resend_limit', 'resend_failed')
     otp_success_turn = bool(update_resp.get('otp_verified_now'))
     # post-submission edit attempt: the server refused the change (submitted
     # inquiries are read-only in chat) - the AI's reply may falsely claim the
@@ -585,12 +732,44 @@ async def handle_agent_batch(
     # and the AI's "thanks, noted your email" would be false - suppress it
     # and ask the did-you-mean question instead
     email_typo = update_resp.get('email_typo_suggestion')
+    # the number could not be a phone number and was NOT stored - the AI's
+    # "thanks, I've noted your mobile" would be false, so it is suppressed and
+    # the number is asked for again
+    phone_invalid = bool(update_resp.get('phone_invalid'))
+    # The save never reached the backend. The model wrote its reply before this
+    # call and cannot know - so it must not be the one to speak. A BUSINESS
+    # refusal is ok:true with its own flag and is deliberately excluded here;
+    # an empty dict means no call was made and is also excluded.
+    save_failed = (update_resp.get('ok') is False
+                   and update_resp.get('status') in _TEMPORARY_BACKEND_FAILURES)
     if 'message' in data and not (
             otp_failed_turn or otp_success_turn or edit_refused_turn
-            or promotion_failed_turn or email_typo):
+            or promotion_failed_turn or email_typo or phone_invalid
+            or save_failed or premature_close):
         message_text = data['message']
-        await send_message(message_text)
-        save_message(lead_id=lead_id, content=message_text, sender_type='ai')
+        if await send_message(message_text):
+            save_message(lead_id=lead_id, content=message_text, sender_type='ai')
+
+    # ... and say something true instead. Deliberately does NOT guess which
+    # field is missing: it reopens the conversation so the next turn asks
+    # properly, rather than inventing a reason.
+    # Says what is true and what is not: nothing was stored, but nothing was
+    # thrown away either - the parent's message is already on the record and
+    # the details are still in the conversation, so trying again costs them
+    # nothing. No escalation: a backend blip is not a reason to hand the chat
+    # to a person. No retry: the server may have finished work this side never
+    # saw, which is exactly why it must not be repeated automatically.
+    if save_failed:
+        await send_server_message(
+            "I'm having trouble saving that just now - nothing has been lost, "
+            "please give me a moment and try again."
+        )
+
+    if premature_close:
+        await send_server_message(
+            "Sorry - I can't pass this to our admissions team just yet, as I am "
+            "still missing something. Let me check the details with you once more."
+        )
 
     # deterministic SUCCESS confirmation - the one place the parent is told
     # their inquiry is actually registered. The AI's reply for the turn is
@@ -607,8 +786,8 @@ async def handle_agent_batch(
         await send_server_message(ok_msg)
         if update_resp.get('registration_id') and data.get('message'):
             info_msg = data['message']
-            await send_message(info_msg)
-            save_message(lead_id=lead_id, content=info_msg, sender_type='ai')
+            if await send_message(info_msg):
+                save_message(lead_id=lead_id, content=info_msg, sender_type='ai')
 
     # the registration could not be created (server-side configuration gap) -
     # the conversation is already escalated; tell the parent honestly instead
@@ -648,25 +827,62 @@ async def handle_agent_batch(
                 f"Too many incorrect attempts, so we've sent a FRESH verification code "
                 f"to {dest}. Please use the newest code - it is valid for 5 minutes."
             )
-        else:
-            # review-before-verify: show what will be registered so wrong or
-            # stale details are caught BEFORE the code locks the inquiry in
-            s = update_resp.get('otp_summary') or {}
-            lines = [
-                f"{label}: {s.get(key)}"
-                for label, key in (
-                    ("Parent/Guardian", 'parent_name'), ("Student", 'student_name'),
-                    ("Class", 'class_name'), ("Mobile", 'phone'), ("Email", 'email'),
-                ) if s.get(key)
-            ]
-            summary = ("Please confirm your details:\n" + "\n".join(lines) + "\n\n") if lines else ""
+        elif otp_notice == 'send_failed':
+            # says only what the sender reported. It could not hand the message
+            # over; that is not the same as knowing it never arrived, so the
+            # wording claims neither. The code IS live, and the resend path is
+            # the way back - which is why this points at it.
             otp_msg = (
-                f"{summary}If anything above is wrong, tell me now and I'll correct it. "
+                "I wasn't able to send the verification code just now - that's "
+                "on our side, not yours. Give it a moment and ask me to resend it."
+            )
+        elif otp_notice == 'resent':
+            otp_msg = (
+                f"Sure - I've sent a new verification code to {dest}. "
+                f"It is valid for 5 minutes, and any earlier code no longer works."
+            )
+        elif otp_notice == 'resend_too_soon':
+            # deliberately does NOT say a code was sent: none was made
+            otp_msg = (
+                f"The code was only just sent to {dest} - please give it a moment "
+                f"to arrive, and check your spam folder. Ask me again in a minute "
+                f"if it still hasn't come through."
+            )
+        elif otp_notice == 'resend_limit':
+            otp_msg = (
+                f"I've already sent several codes to {dest}, so I can't send another "
+                f"right now. Please check your spam folder - if nothing has arrived, "
+                f"our admissions team can complete this with you directly."
+            )
+        elif otp_notice == 'resend_failed':
+            # honest: the code exists, the message did not go
+            otp_msg = (
+                "I wasn't able to send the code just now - that's on our side, "
+                "not yours. Please try again in a moment."
+            )
+        else:
+            # No details listed here any more. The code is only issued
+            # after the parent has confirmed them in the chat, so this
+            # notice repeating the same five fields asked them to review
+            # what they had just reviewed. Corrections are still open -
+            # saying so is enough.
+            otp_msg = (
                 f"We've sent a verification code to {dest} - "
                 f"please type the code here to complete your inquiry. "
-                f"The code is valid for 5 minutes."
+                f"The code is valid for 5 minutes. "
+                f"If any of the details you just confirmed are wrong, "
+                f"tell me instead and I'll correct them."
             )
         await send_server_message(otp_msg)
+
+    # a number that cannot be a phone number was dropped rather than stored -
+    # say so plainly and name the likely fix, because the commonest cause is a
+    # number sent without its country code
+    if phone_invalid:
+        await send_server_message(
+            "That doesn't look like a complete phone number. "
+            "Could you send it with the country code?"
+        )
 
     # misspelled email domain: ask for confirmation instead of silently
     # storing a dead mailbox (the OTP mail would never arrive) - the address
@@ -682,11 +898,17 @@ async def handle_agent_batch(
     # edit and escalated the conversation so staff see the request - this
     # server verdict is the only message the parent gets on such a turn
     if edit_refused_turn:
+        # Says only what is true. The old wording promised the request had been
+        # passed to admissions and would be reviewed - nothing did that, and
+        # nothing could: staff have no way to reply into this conversation.
+        # It also invites the parent to carry on, because the assistant is
+        # still here now that a refusal no longer escalates.
         lock_msg = (
             "This inquiry has already been submitted, so its details can't be "
-            "changed here in the chat. I've passed your request to our "
-            "admissions team - they will review it and make any correction "
-            "needed."
+            "changed here in the chat - our admissions team handles corrections "
+            "once an inquiry is in. Please raise it with them directly and they "
+            "will sort it out. Is there anything else I can help you with in "
+            "the meantime?"
         )
         await send_server_message(lock_msg)
 

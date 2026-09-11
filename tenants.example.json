@@ -1,11 +1,41 @@
 {
-  "_comment": "SaaS Phase 1 tenant registry (see SAAS-ARCHITECTURE.md). Copy to tenants.json (git-ignored), set TENANTS_FILE=/app/agent/tenants.json. Without a registry file the agent runs exactly as before, serving the single 'default' tenant from the classic .env vars. Org keys: lowercase, never 'webchat'.",
+  "_comment": "SaaS tenant registry - copy to tenants.json (git-ignored, chmod 600) and set TENANTS_FILE. Without a registry file the agent serves the single built-in 'default' tenant from .env, exactly the classic behaviour. NEVER bake this file into the image (.dockerignore excludes it): it holds every organization's secrets, and the compose files mount it read-only at runtime. After editing: POST /infra/reload-tenants with X-Agent-Token - no rebuild, no restart, no downtime for orgs already being served.",
+
+  "_org_key_rules": "Lowercase, URL-safe, stable forever - it appears in every web-chat URL (/webhooks/<org>/webchat/...) and prefixes that org's chat memory and Qdrant collections. Renaming one orphans both. Never use 'webchat' (it would collide with the non-org route) or 'default'.",
+
+  "_how_a_request_finds_its_org": {
+    "webchat": "the <org> segment of the URL: /webhooks/<org>/webchat/<channel_id>",
+    "whatsapp": "the <org> segment of /webhooks/<org>/whatsapp/<channel_id>/ - which is also the only thing Meta's VERIFICATION GET carries, since it has no payload - and, on a message POST, the Phone Number ID matched against phone_number_ids",
+    "admin endpoints": "the X-Agent-Token header, matched against api_token (the shared operator token authenticates but names no org, so it cannot reindex)",
+    "_if_none_of_them_do": "With STRICT_TENANCY=true the request is refused with 400. Without it, the request is served from the default tenant built from .env - which means an inquiry created in whichever company that points at, silently. Keep strict mode on whenever this file holds more than one organization."
+  },
+
   "sanabl": {
+    "_note": "A group running its own CRM. backend_url points at THAT group's .NET API - the agent is shared, the CRM and its SQL Server are not.",
     "backend_url": "https://api.sanabl.example.com",
-    "api_token": "agw_generate_per_org",
+    "api_token": "agw_generate_a_distinct_token_per_org",
     "google_api_key": "AIza_org_specific_key",
     "qdrant_prefix": "sanabl",
     "phone_number_ids": ["1277267818798741"],
     "webchat_origins": ["https://sanabl.example.com"]
+  },
+
+  "alnoor": {
+    "_note": "A second group. Nothing is shared with sanabl: different backend, different token, different Gemini quota, different Qdrant collections. One org's chat cannot reach another's data even if a bug tried to.",
+    "backend_url": "https://crm.alnoor.example.com",
+    "api_token": "agw_a_completely_different_token",
+    "google_api_key": "AIza_alnoor_own_key",
+    "qdrant_prefix": "alnoor",
+    "phone_number_ids": ["1099887766554433", "1122334455667788"],
+    "webchat_origins": ["https://alnoor.example.com", "https://admissions.alnoor.example.com"]
+  },
+
+  "_field_notes": {
+    "backend_url": "REQUIRED. The org's own OnlineCampus .NET API. Wrong value = that org answers 500 while every other org is fine, so check per-org after onboarding, not just /health.",
+    "api_token": "REQUIRED, and must be UNIQUE per org - it is also how an admin call identifies which organization is calling. Reusing one across orgs makes them indistinguishable.",
+    "google_api_key": "Optional. Omit to fall back to the shared GOOGLE_API_KEY in .env. Set it to give the org its own quota and billing.",
+    "qdrant_prefix": "Defaults to the org key. Collections are named <prefix>-<agent_id>, which is what keeps one school's documents out of another's answers.",
+    "phone_number_ids": "Meta Phone Number IDs, as strings. This is the ONLY way a WhatsApp webhook is routed to an org - an ID missing here means that number's messages cannot be served. A group with several numbers lists them all.",
+    "webchat_origins": "Browser origins allowed to call this org's webchat endpoints, exactly as the browser sends them (scheme + host + port, no path, no trailing slash). The agent builds its CORS allow-list from this registry on every request, so adding an origin takes effect at the next reload with no restart. Empty = that org's website cannot reach the chat - and CORS failure is invisible server-side: the request arrives, the agent answers, the browser discards the reply."
   }
 }

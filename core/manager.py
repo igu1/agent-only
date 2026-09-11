@@ -1,4 +1,5 @@
 # agent factory - builds the agno agent with tools
+import logging
 import os
 from pathlib import Path
 import threading
@@ -27,6 +28,9 @@ def _init_agent_db() -> None:
 _init_agent_db()
 from infra.config import get_timezone
 from infra.profile import (
+    build_class_instructions,
+    build_confirmation_instructions,
+    build_sibling_flow_instructions,
     get_profile,
     get_flows,
     build_identity_instructions,
@@ -45,7 +49,44 @@ from tools.business_info import build_business_tools
 from tools.datetime_tools import build_datetime_tools
 
 
-def build_agent_prompt(*, profile: dict, agent_id: int | None = None) -> dict:
+logger = logging.getLogger(__name__)
+
+
+def build_agent_knowledge(*, agent_id: int | None = None):
+    """The agent's Qdrant collection, or None when there is not one to attach.
+
+    None is a real answer here, not a failure to be swallowed. The caller turns
+    it into `search_knowledge=False`, and the prompt must then STOP advertising
+    the tool: the model was being told to ALWAYS search a knowledge library
+    before answering, and never to deflect to the admissions team without
+    searching first, while no such tool existed on it. It cannot obey either
+    instruction, so it answers from its own general knowledge - a plausible
+    document list presented as this school's policy - or deflects anyway.
+
+    Both ways out are logged. A missing QDRANT_URL is a deployment CHOICE (the
+    agent runs on its lookup tools alone), while an unreachable Qdrant is a
+    deployment FAULT, and the two must not look the same in a log.
+    """
+    if not os.getenv('QDRANT_URL'):
+        logger.warning(
+            'agent %s: no knowledge base configured (QDRANT_URL is not set) - '
+            'search_knowledge_base is NOT advertised to the model; it answers '
+            'from its lookup tools only', agent_id)
+        return None
+    try:
+        from services.rag import build_knowledge
+        return build_knowledge(agent_id=agent_id)
+    except Exception as e:
+        # never fatal: a school losing its documents must not lose its chat
+        logger.warning(
+            'agent %s: knowledge base UNREACHABLE (%s: %s) - '
+            'search_knowledge_base is NOT advertised to the model; it answers '
+            'from its lookup tools only', agent_id, type(e).__name__, e)
+        return None
+
+
+def build_agent_prompt(*, profile: dict, agent_id: int | None = None,
+                       has_knowledge: bool = False) -> dict:
     flow = get_flows(agent_id=agent_id)
     instructions: list[str] = []
     instructions.extend(build_base_guard_instructions(profile))
@@ -61,6 +102,14 @@ def build_agent_prompt(*, profile: dict, agent_id: int | None = None) -> dict:
         instructions.extend(tone)
     instructions.extend(build_flow_instructions(agent_id=agent_id, flow=flow))
     instructions.append("")
+    classes = build_class_instructions(agent_id=agent_id)
+    if classes:
+        instructions.extend(classes)
+        instructions.append("")
+    instructions.extend(build_confirmation_instructions())
+    instructions.append("")
+    instructions.extend(build_sibling_flow_instructions())
+    instructions.append("")
     fmt = build_format_guidelines(flow)
     if fmt:
         instructions.extend(fmt)
@@ -68,7 +117,11 @@ def build_agent_prompt(*, profile: dict, agent_id: int | None = None) -> dict:
     if esc:
         instructions.extend(esc)
     instructions.append("## Available Tools")
-    instructions.append("- search_knowledge_base - the institution's knowledge library: policies, transport/bus service, fees, documents, facilities, and anything uploaded by staff. ALWAYS search it FIRST before answering any factual question about the institution, and ALWAYS search it before saying you don't have information. Answer from what it returns.")
+    # Listed ONLY when it is really attached (`search_knowledge=True`). Naming a
+    # tool the model does not have does not make it search - it makes it invent,
+    # because the rule it was given has no way to be followed.
+    if has_knowledge:
+        instructions.append("- search_knowledge_base - the institution's knowledge library: policies, transport/bus service, fees, documents, facilities, and anything uploaded by staff. ALWAYS search it FIRST before answering any factual question about the institution, and ALWAYS search it before saying you don't have information. Answer from what it returns.")
     instructions.append("Use these tools to look up institution data when the user asks:")
     instructions.append("- get_business_locations / get_primary_business_location - for campus location, address, working hours, and holidays. operating_hours: {0=Mon..6=Sun, each: open/close HH:MM, is_closed bool}. special_holidays: multiline 'DD-MM-YYYY - Name'. For hours/availability: call get_current_day() for today, map day to int, check is_closed first, then compare time in 24hr (8pm=20:00). Always answer definitively with actual times.")
     instructions.append("- get_fee_details(class_id) - the OFFICIAL fee chart for a class: receipt groups, installments, fee items, and exact amounts. Use it ONLY when the parent has ASKED about fees, tuition, cost or a price - it answers a question, it is never volunteered. Learning which class a student is applying for is NOT a fee question: collecting the class is a flow step, so record it and move to the NEXT step, never to fees. When they DO ask, pick class_id from the valid class list; the class is the ONLY thing you need to quote fees, so if you do not know it yet ask just that one question and then answer - never ask for name, mobile, email or the admission details first.")
@@ -134,20 +187,16 @@ def create_agent(*, agent_id: int | None = None) -> Agent:
     if not profile:
         raise ValueError("No active AI profile found.")
 
-    agent_config = build_agent_prompt(profile=profile, agent_id=agent_id)
+    # BEFORE the prompt, because the prompt has to know: an instruction to
+    # always search a library that was never attached is one the model cannot
+    # obey, and it answers by inventing or by deflecting instead.
+    knowledge = build_agent_knowledge(agent_id=agent_id)
+
+    agent_config = build_agent_prompt(profile=profile, agent_id=agent_id,
+                                      has_knowledge=knowledge is not None)
     # this school's own timezone - a group may have campuses in different
     # regions, and it drives both the model's clock and the day tool
     timezone = get_timezone(profile)
-
-    # RAG: attach the per-agent Qdrant collection when configured; without
-    # QDRANT_URL the agent runs tools-only (graceful degradation)
-    knowledge = None
-    if os.getenv('QDRANT_URL'):
-        try:
-            from services.rag import build_knowledge
-            knowledge = build_knowledge(agent_id=agent_id)
-        except Exception:
-            knowledge = None
 
     agent = Agent(
         name=agent_config['name'],

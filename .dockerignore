@@ -62,3 +62,27 @@ logs/
 Dockerfile
 docker-compose.yml
 .dockerignore
+
+# Tenant registry - one file holding EVERY organisation's agent token and
+# Gemini key. The SaaS compose mounts it read-only at runtime
+# (./tenants.json:/app/agent/tenants.json:ro), so baking it into the image
+# would put every customer's secrets inside an artifact that gets pushed to a
+# registry and pulled by anyone who can reach it.
+tenants.json
+
+# Test suites and their fixtures: they reach a live gateway and a real
+# database, and nothing in the container ever runs them.
+tests/
+
+# Developer conveniences - a Windows launcher and a make target have no
+# meaning inside the image.
+dev-run.ps1
+Makefile
+
+# Deployment kits describe how to RUN the image; they do not belong IN it.
+deploy/
+docker-compose.queue.yml
+
+# Customer documents belong in the knowledge base, uploaded per organisation -
+# never shipped in an image that every organisation pulls.
+static/*.pdf

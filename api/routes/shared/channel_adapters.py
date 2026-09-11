@@ -62,6 +62,10 @@ class IncomingMessage:
     # the webchat widget has no trusted clock, so it is stamped on arrival).
     # The backend keeps the first one of a conversation as its chat start time.
     sent_at: float | None = None
+    # what KIND of attachment arrived when it is one we cannot read ('image',
+    # 'document', 'video'...). Lets the acknowledgement name the thing the
+    # parent actually sent instead of saying 'attachment'.
+    media_kind: str | None = None
     # the institution chosen on the HOST PAGE before the chat opened (the
     # inquiry page's dropdown). Webchat carries it on every message so the
     # assistant is told which college it serves instead of asking.
@@ -179,11 +183,13 @@ class TelegramAdapter:
     def should_ignore(self, *, channel_id: str | None, service: object, message: IncomingMessage) -> bool:
         return message.text.startswith('/')
 
-    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> None:
+    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> bool:
         try:
             service.send_message(int(message.chat_id), text)
-        except Exception as e:
-            _ = e
+            return True
+        except Exception:
+            logger.exception('Telegram send failed for chat %s', message.chat_id)
+            return False
 
     def send_typing_indicator(self, *, service: object, message: IncomingMessage) -> None:
         try:
@@ -242,6 +248,7 @@ class WhatsAppAdapter:
         has_media = False
         is_voice = False
         voice_media_id = None
+        media_kind = None
         if message_type == 'text':
             text = str(((message.get('text') or {}).get('body') or '')).strip()
         elif message_type in ('audio', 'voice'):
@@ -249,6 +256,13 @@ class WhatsAppAdapter:
             has_media = True
             is_voice = True
             voice_media_id = (message.get('audio') or message.get('voice') or {}).get('id')
+        elif message_type in _UNREADABLE_MEDIA:
+            # Previously this fell through to `if not text: return None` and the
+            # parent's document disappeared without trace. It IS a message; we
+            # simply cannot read it, and saying so is the whole point.
+            media_kind = message_type
+            text = f'[{message_type} received]'
+            has_media = True
         if not text:
             return None
 
@@ -261,6 +275,7 @@ class WhatsAppAdapter:
             has_media=has_media,
             is_voice=is_voice,
             voice_media_id=str(voice_media_id) if voice_media_id else None,
+            media_kind=media_kind,
             sent_at=_epoch_seconds(message.get('timestamp')) or time.time(),
         )
 
@@ -273,14 +288,24 @@ class WhatsAppAdapter:
             return True
         return False
 
-    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> None:
+    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> bool:
+        """True when Meta accepted the message.
+
+        The service raises a RuntimeError carrying the HTTP status and Meta's
+        error body - 131047 for a send outside the 24h window, an auth failure,
+        a timeout. Swallowing that left callers unable to tell a delivered
+        message from a dead API, and recording both as delivered.
+        """
         try:
             phone_number = message.chat_id.lstrip('+')
             service.send_message(phone_number, text)
-        except Exception as e:
-            _ = e
+            return True
+        except Exception:
+            logger.exception('WhatsApp send failed for chat %s', message.chat_id)
+            return False
 
     def send_typing_indicator(self, *, service: object, message: IncomingMessage) -> None:
+        # cosmetic: a missing typing dot is not worth a log line
         try:
             phone_number = message.chat_id.lstrip('+')
             service.send_typing_indicator(phone_number, message.message_id)
@@ -369,11 +394,13 @@ class InstagramAdapter:
     def should_ignore(self, *, channel_id: str | None, service: object, message: IncomingMessage) -> bool:
         return message.text.startswith('/')
 
-    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> None:
+    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> bool:
         try:
             service.send_message(message.chat_id, text)
-        except Exception as e:
-            _ = e
+            return True
+        except Exception:
+            logger.exception('Instagram send failed for chat %s', message.chat_id)
+            return False
 
     def send_typing_indicator(self, *, service: object, message: IncomingMessage) -> None:
         try:
@@ -390,6 +417,10 @@ class InstagramAdapter:
 
 # webchat - the website chat widget; no third-party API, replies go to the
 # in-process store the widget polls (see shared/webchat_store.py)
+
+# WhatsApp types the assistant cannot read. Audio and voice are deliberately
+# absent - those ARE supported and go to the model as bytes.
+_UNREADABLE_MEDIA = ('image', 'document', 'video', 'sticker')
 
 _SESSION_ID_MAX = 64
 _TEXT_MAX = 4000
@@ -465,12 +496,14 @@ class WebChatAdapter:
     def should_ignore(self, *, channel_id: str | None, service: object, message: IncomingMessage) -> bool:
         return message.text.startswith('/')
 
-    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> None:
+    def send_message(self, *, service: object, message: IncomingMessage, text: str) -> bool:
         try:
             from api.routes.shared.webchat_store import store
             store.append_message(message.chat_id, text)
+            return True
         except Exception as e:
             _ = e
+            return False
 
     def send_typing_indicator(self, *, service: object, message: IncomingMessage) -> None:
         try:

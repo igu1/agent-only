@@ -75,11 +75,35 @@ def build_business_tools(*, agent_id: int | None = None) -> list:
 
     # keyed by class / phone rather than by agent - nothing to bind
     @tool
-    def get_fee_details(class_id: int) -> list[dict]:
+    def get_fee_details(class_id: int) -> dict:
         """Get the official fee chart for a class by its class ID: fee receipt
         groups, installments, fee items, and net amounts. Use for any question
-        about fees, tuition, or costs for a specific class."""
-        return get_fee_chart(class_id)
+        about fees, tuition, or costs for a specific class.
+
+        Returns {"rows": [...]} when a chart exists. When the school has not
+        configured one, returns {"rows": [], "no_fee_chart": true, "tell_parent":
+        ...} - say that, and quote NO figure.
+        """
+        rows = get_fee_chart(class_id)
+        if rows:
+            return {"rows": rows}
+        # An empty list is silence, and the model filled it: asked for Grade 3
+        # fees at a school with NO fee rows at all, it answered "the first
+        # installment of 3,500 SAR is due at admission". Nobody set that number.
+        # A parent can act on a figure like that, so the tool says in words what
+        # an empty list left open.
+        return {
+            "rows": [],
+            "no_fee_chart": True,
+            "tell_parent": (
+                "This school has not published a fee chart for this class, so "
+                "you do NOT have its fees. Say plainly that you do not have the "
+                "figures for that class and that the admissions team will "
+                "confirm them. Do NOT state, estimate or illustrate ANY amount, "
+                "instalment count or fee structure - there is nothing to base "
+                "one on. Then carry on with the inquiry."
+            ),
+        }
 
     @tool
     def get_inquiry_status(phone_number: str) -> list[dict]:

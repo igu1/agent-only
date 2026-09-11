@@ -1,30 +1,51 @@
 # CronoCRM Agent — SaaS Architecture Plan
 
-Companion to DEPLOYMENT.md. That runbook describes the CURRENT model
-(one container per organization). This document is the roadmap for the
-SHARED SaaS model: one deployment serving every organization, split into
-services with managed load. Adopt it in phases — each phase is
-independently shippable and reversible.
+Companion to DEPLOYMENT.md. That runbook is how the shared deployment is
+actually operated; this document is why it is shaped the way it is, and what
+comes next as load grows. Phases 1 and 2 are in production use. Each later
+phase is independently shippable and reversible.
 
-## When to switch (decision thresholds)
+The earlier model — one container and one `.env` per organization — has been
+retired. It is worth knowing what it cost, because the current design is
+mostly a list of its failures: a list of orgs in an update script that
+silently skipped a customer when it went stale, a health check keyed by port,
+a per-org container's RAM, and a rebuild for every onboarding.
 
-Stay on container-per-org until at least one of these is true:
-- ~30+ organizations (per-container RAM / update time hurts)
-- self-service signup (can't run a script per customer)
+## When to split further (decision thresholds)
+
+One shared agent process is enough until at least one of these is true:
+- self-service signup (nobody is running a script per customer any more)
 - Meta webhook timeouts under load
 - a second server is needed
+- one org's campaign day starves the others (phase 3's fairness caps)
 
 ## Phase 1 — Tenant registry + context plumbing (code only) — ✅ IMPLEMENTED
 
 Status: implemented and verified (2026-08-17). The registry lives in
 `infra/tenants.py`; `TENANTS_FILE` points at `tenants.json` (git-ignored,
 see `tenants.example.json`). With no registry file the agent serves the
-single built-in "default" tenant from the classic `.env` vars — existing
-per-org deployments behave exactly as before. Org-prefixed webchat routes
+single built-in "default" tenant from the classic `.env` vars, so a
+single-organization stack needs no registry at all. Org-prefixed webchat routes
 (`/webhooks/{org}/webchat/...`), WhatsApp tenant resolution by
 `phone_number_id`, token→org resolution on admin endpoints, and
 `POST /infra/reload-tenants` are live. Verified: default-route regression,
 org-route conversation, unknown-org 404, registry reload.
+
+**`STRICT_TENANCY=true` closes the fallback** (2026-09-11). The registry's
+last line was `_registry.get(org) or _registry[DEFAULT_ORG]`, which is right
+for one organization and wrong for many: it turns every failure to identify a
+tenant into a quiet success, serving the request from whatever `.env` points
+at. A WhatsApp number missing from `tenants.json` would create that parent's
+inquiry in another company's CRM, with no error and no log line.
+
+Strict mode refuses (400) at the entry points instead — web chat, WhatsApp
+(messages *and* Meta's verification GET, which carries no payload at all),
+Telegram, and `/rag/reindex` called with the shared operator token rather than
+an org's own. `get_tenant()` keeps its fallback so nothing dies mid-turn, but
+now logs a warning; silence was the actual defect. Off by default, so a
+single-org deployment is unchanged. Under it, **every channel must use its
+org-prefixed URL** — `/webhooks/{org}/webchat/{id}` and
+`/webhooks/{org}/whatsapp/{id}/`.
 
 Goal: the agent stops reading its identity from `.env` and resolves it
 PER REQUEST. Ship this while still deploying per-org — behavior identical,

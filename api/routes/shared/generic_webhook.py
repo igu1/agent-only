@@ -8,9 +8,91 @@ from infra.ws_bridge import broadcast_to_conversation_async, broadcast_to_org_as
 from api.routes.shared.message_batcher import enqueue
 from api.routes.shared.msgchannel_processor import handle_agent_batch
 from api.routes.shared.channel_adapters import ChannelAdapter, IncomingMessage
+from api.routes.shared.channel_handler import save_message
 from api.routes.shared.channel_registry import registry
 
 logger = logging.getLogger(__name__)
+
+# Statuses that mean "try again shortly", not "this request was wrong".
+# 503 covers connection refused / timeout too: django_api maps every transport
+# failure onto it, since no HTTP status ever existed for those.
+_TEMPORARY_BACKEND_FAILURES = frozenset({500, 502, 503, 504})
+
+# What a parent hears after their conversation has been handed to a person.
+# It promises a follow-up, NOT a reply in this chat: staff have no way to send
+# into a conversation yet, and an acknowledgement that implied otherwise would
+# be a promise the system cannot keep.
+ESCALATED_ACK = (
+    "Thanks - our admissions team has your message and will follow up with you "
+    "directly. I've paused here so a colleague can take over."
+)
+
+# One acknowledgement per conversation per window. A parent typing a paragraph
+# as five messages asked once, not five times.
+_ACK_COOLDOWN_SECONDS = 15 * 60
+_acked: dict[str, float] = {}
+
+
+def _should_ack(key: str, now: float) -> bool:
+    """True at most once per conversation per window.
+
+    In-process, so it does not survive a restart and is per-worker: the worst
+    case is a second courtesy line, which is why this is not worth a column on
+    the conversation. Old keys are dropped here rather than by a timer.
+    """
+    for stale in [k for k, t in _acked.items() if now - t > _ACK_COOLDOWN_SECONDS]:
+        _acked.pop(stale, None)
+    if now - _acked.get(key, float('-inf')) < _ACK_COOLDOWN_SECONDS:
+        return False
+    _acked[key] = now
+    return True
+
+
+_UNREADABLE_MEDIA_REPLY = {
+    'image': "I can't read images here yet.",
+    'sticker': "I can't read images here yet.",
+    'document': "I can't open documents here yet.",
+    'video': "I can't watch videos here yet.",
+}
+_UNREADABLE_MEDIA_DEFAULT = "I can't process attachments here yet."
+_UNREADABLE_MEDIA_ASK = " Please type the information you'd like me to use."
+
+# One reply per conversation per minute. A parent sending an album of six
+# photos asked one question, not six.
+_MEDIA_ACK_COOLDOWN_SECONDS = 60
+_media_acked: dict[str, float] = {}
+
+
+def _should_ack_media(key: str, now: float) -> bool:
+    for stale in [k for k, t in _media_acked.items()
+                  if now - t > _MEDIA_ACK_COOLDOWN_SECONDS]:
+        _media_acked.pop(stale, None)
+    if now - _media_acked.get(key, float('-inf')) < _MEDIA_ACK_COOLDOWN_SECONDS:
+        return False
+    _media_acked[key] = now
+    return True
+
+
+async def _acknowledge_unreadable_media(*, adapter, service, message,
+                                        lead_id, batch_key) -> None:
+    """Tell the parent plainly that the attachment cannot be read.
+
+    Never raises: a courtesy reply is not worth failing a webhook Meta would
+    then retry.
+    """
+    import time as _time
+    if not _should_ack_media(batch_key, _time.monotonic()):
+        return
+    text = (_UNREADABLE_MEDIA_REPLY.get(message.media_kind or '',
+                                        _UNREADABLE_MEDIA_DEFAULT)
+            + _UNREADABLE_MEDIA_ASK)
+    try:
+        if adapter.send_message(service=service, message=message, text=text) \
+                and lead_id is not None:
+            save_message(lead_id=lead_id, content=text, sender_type='ai')
+    except Exception:
+        logger.exception('unreadable-media acknowledgement failed for chat %s',
+                         message.chat_id)
 
 
 def _to_int(value):
@@ -144,11 +226,30 @@ async def handle_incoming_webhook(
     )
 
     if not inbound.get('ok'):
-        code = int(inbound.get('status') or 500)
+        # A business refusal - unknown channel, blank chat id - arrives on HTTP
+        # 200 with {"ok": false} and NO status key, because urlopen succeeded
+        # and this is just the parsed body. Only a transport or HTTP failure
+        # carries `status`. Defaulting a missing one to 500 would turn every
+        # such refusal into a retry storm, so absent means permanent.
+        raw_status = inbound.get('status')
+        code = int(raw_status) if raw_status is not None else None
         if code == 401:
             raise HTTPException(status_code=401, detail='Unauthorized')
         if code == 404:
             raise HTTPException(status_code=404, detail='Channel not found or inactive')
+        if code in _TEMPORARY_BACKEND_FAILURES:
+            # /inbound/ is what PERSISTS the parent's message - nothing before
+            # it writes anything - so answering 200 here would tell the channel
+            # a message we never took had been handled, and it would never be
+            # sent again. 503 hands it back for the channel's own retry, which
+            # already exists and already backs off. Stop the turn here: no
+            # agent, no lead processing, nothing that assumes a conversation.
+            logger.warning(
+                'backend unavailable (status=%s) - returning 503 so %s retries '
+                'the inbound webhook for chat %s',
+                code, channel_type, message.chat_id)
+            raise HTTPException(status_code=503,
+                                detail='Backend temporarily unavailable')
         return ack
 
     lead_id_int = _to_int(inbound.get('lead_id'))
@@ -186,6 +287,25 @@ async def handle_incoming_webhook(
             )
 
     if inbound.get('ignore'):
+        # Escalated: a person owns this conversation, so the AI stays out of it
+        # - but the parent is still typing into what looks like a dead channel.
+        # Answer once, from the server, without waking anything: this is
+        # upstream of the batcher and of handle_agent_batch, so no agent is
+        # built, and no conversation state is written.
+        # The OTHER ignore reasons (unknown or inactive channel, blank chat id)
+        # have no conversation and nobody expecting us, so they stay silent.
+        if inbound.get('escalated') and lead_id_int is not None:
+            import time as _time
+            if _should_ack(batch_key, _time.monotonic()):
+                try:
+                    adapter.send_message(service=service, message=message,
+                                         text=ESCALATED_ACK)
+                    save_message(lead_id=lead_id_int, content=ESCALATED_ACK,
+                                 sender_type='ai')
+                except Exception:
+                    logger.exception(
+                        'escalated acknowledgement failed for conversation %s',
+                        lead_id_int)
         return ack
 
     if lead_id_int is None:
@@ -196,6 +316,15 @@ async def handle_incoming_webhook(
         return ack
     
     if message.has_media and not message.is_voice:
+        # Something arrived that the assistant cannot read - a photographed
+        # document, most often. Answering HERE, before an agent is built, is
+        # deliberate: the model never sees it, so it cannot reply as though it
+        # had read it. Saying nothing was the worst option, because a parent
+        # who sends their child's birth certificate and hears nothing back
+        # reasonably assumes it was received.
+        await _acknowledge_unreadable_media(
+            adapter=adapter, service=service, message=message,
+            lead_id=lead_id_int, batch_key=batch_key)
         return ack
 
     # For voice messages, download audio bytes for direct model processing
@@ -211,8 +340,8 @@ async def handle_incoming_webhook(
             )
 
     async def _handle_batch(batched_text: str) -> None:
-        async def send_message(text: str) -> None:
-            adapter.send_message(
+        async def send_message(text: str) -> bool:
+            return adapter.send_message(
                 service=service,
                 message=message,
                 text=text

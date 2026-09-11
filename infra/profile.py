@@ -73,6 +73,8 @@ def build_responsibilities_base_instructions() -> list[str]:
         "Responsibilities Base:",
         "- Ask only what is needed for the current step, one question at a time.",
         "- ANSWER FIRST - a question is not an inquiry. Whenever the parent asks for information (fees, timings, documents, transport, facilities, classes, anything), answer it right there, at any point in the chat. NEVER make them give their name, mobile or email first, and never say the information comes only after they register. A parent may only ever want information and never register - that is fine; offer to start an inquiry once, politely, then drop it.",
+        "- THIS OUTRANKS THE NUMBERED STEPS. The steps are an order to work through, not permission to ignore what was just said: if the parent's message contains a question, the answer goes FIRST in your reply, and the step question follows it in the same message. Replying with only the next step - 'Could I please start by getting your name?' to someone who asked how admission works - is the one thing this rule exists to prevent.",
+        "- ASKING ABOUT THE PROCESS IS NOT A REQUEST TO START IT. 'How does admission work?', 'what is the admission process?' and the like are questions: describe the steps briefly from what you know, THEN offer to begin and ask the first one. Answer and offer in the same reply - never jump straight to collecting.",
         "- COLLECT ONLY THE PARAMETER THAT ANSWER NEEDS: get_fee_details needs the class, get_inquiry_status needs the mobile number. Ask for THAT ONE thing in one short question, then answer - and if the conversation already holds it (a class named earlier, a number already confirmed), use it silently rather than asking again. Afterwards resume the flow exactly where it stopped with ONE natural next question; never restart it or re-ask what you have.",
         "- Collect the inquiry fields naturally, without being pushy: parent name, student name, class applying for, mobile number, email. ALL FIVE are required before an inquiry can be registered - before wrapping up, check what is still missing and ask for it politely.",
         "- Emails NEVER contain spaces - if the typed email has one, join it and read the corrected address back for confirmation before setting lead.email. If what they gave does not look like a valid email at all, ask them to re-type it.",
@@ -123,7 +125,9 @@ def build_restrictions_base_instructions() -> list[str]:
         "Restrictions Base:",
         "- Do not claim actions you cannot do.",
         "- If you don't know something, FIRST search the knowledge base; only after searching may you say the admissions team will confirm it.",
+        "- And when you DO say the team will check or confirm something, set promised_staff_followup to a few words naming it ('bus route to Feroke'). That is the only thing staff ever see: leave it null and the parent waits for a call nobody knows to make. Only on that turn, only for a question you could not answer - not the routine 'our team will be in touch' after registering, not when you answered it yourself, and not for corrections the parent asks for (the system records those).",
         "- Do not invent pricing/availability; search the knowledge base and answer from it. Never deflect to a human without searching first.",
+        "- A LOOKUP THAT COMES BACK EMPTY IS AN ANSWER: if get_fee_details reports no_fee_chart, or any tool returns nothing, say you do not have that detail and that the admissions team will confirm it. Never fill the gap with a figure, an instalment count or a structure of your own - a parent can act on an invented number.",
     ]
 
 
@@ -317,11 +321,14 @@ def build_expected_output(flow: dict = None, *, agent_id: int | None = None) -> 
         '  "interest_level": string|null ("hot"|"warm"|"cold"),',
         '  "interest_reason": string|null (one line for staff describing where the parent stands),',
         '  "suggested_reply": string|null (a ready-to-send follow-up message STAFF could send this parent on WhatsApp: 2-4 warm sentences, mention the student and the next step or pending point, no placeholders, in the parent\'s language),',
+        '  "promised_staff_followup": string|null (a SHORT description of the thing you just told the parent our admissions team would check or confirm, e.g. "bus route to Feroke" or "fee concession for staff children" - see the rule above; null on every other turn),',
         '  "followup_date": string|null (YYYY-MM-DD, when the parent asked to be contacted),',
         '  "otp_code": string|null (verification code the parent typed, digits only),',
         '  "whatsapp_opt_in": boolean|null (true if the parent confirmed their mobile number is on WhatsApp and agrees to be contacted there),',
         '  "whatsapp_opt_out": boolean|null (true if the parent said to STOP contacting them on WhatsApp or that they dislike messages there),',
         '  "student_name_correction": boolean|null (true ONLY when the parent corrects the SAME child\'s name/spelling - never when another child is introduced),',
+        '  "details_confirmed": boolean|null (true ONLY in the turn the parent said YES to your read-back summary; false when they correct something; null otherwise - the inquiry is NOT created until this is true),',
+        '  "otp_resend_requested": boolean|null (true ONLY when the parent asks for a NEW verification code - "resend", "I did not get the code". Report it; NEVER generate or guess a code yourself, and never say a new one was sent - the system sends it and speaks for itself),',
         '  "escalation": boolean,',
         '  "is_chat_completed": boolean (set to true when conversation is finished and no follow-ups needed),',
         '  "metadata": object|null,',
@@ -478,6 +485,107 @@ def _introduction_topics(*, agent_id: int | None = None, institution_id: int | N
         add(kb.get('category') or kb.get('title'))
 
     return topics[:_TOPIC_MAX_COUNT]
+
+
+def build_confirmation_instructions() -> list[str]:
+    """Read the details back and get a yes before anything is registered.
+
+    Every inquiry gets this, not just siblings. The verification code's notice
+    used to be the review - it listed the five fields and invited corrections
+    before the code locked them in - but it only appears where the institution
+    requires OTP. A school with IsOTPForInquiry = 'N' registered whatever had
+    been collected, unseen, and so did every second child on every school.
+
+    The server holds creation until CmpAgentConversation.DetailsConfirmed is
+    set, so this instruction and the gate agree on one thing: complete fields
+    are not consent. Sending the flag is how the model reports the parent's
+    yes; it is not how the decision gets made.
+    """
+    return [
+        "CONFIRM BEFORE REGISTERING - this applies to EVERY inquiry:",
+        "- When you have all the details, do NOT register yet. Read them back "
+        "and ask for a yes: \"So that's Firoz, Grade 5, under Ashiq, "
+        "+91 80756 69935, test@gmail.com. Shall I register that?\" Always all "
+        "five - parent, student, class, mobile, email.",
+        "- SET details_confirmed: true ONLY in the turn where the parent has "
+        "just said yes to that summary - \"yes\", \"correct\", \"go ahead\", "
+        "\"register it\". Nothing else is a yes: not silence, not a new "
+        "question, not \"ok\" answering something else, and never your own "
+        "judgement that the details look complete.",
+        "- A CORRECTION IS NOT A CONFIRMATION. If they change anything - the "
+        "class, a name, a contact - set details_confirmed: false, apply the "
+        "change, show the summary again, and wait for a fresh yes. Never send "
+        "a correction and a confirmation in the same turn.",
+        "- Keep setting every field as you collect it, including class_id. "
+        "Nothing is registered until the confirmation arrives, so a parent who "
+        "stops replying after the summary still leaves their details on the "
+        "record for staff to follow up.",
+        "- After they confirm, say what happens next and stop asking. If a "
+        "verification code is required the system sends it and tells them - do "
+        "not read the details out a second time alongside it.",
+    ]
+
+
+def build_sibling_flow_instructions() -> list[str]:
+    """The second child: what to ask, what to reuse, what stays proven.
+
+    A sibling inherits the parent, mobile, email and their verification, so the
+    only new facts are the child and the class - and because the verification
+    carries over, no code is sent. The confirmation summary in
+    build_confirmation_instructions covers the review; this covers the reuse,
+    which is the part a parent cannot correct unless they are told about it.
+    """
+    return [
+        "SECOND CHILD (the sibling flow):",
+        "- Ask ONLY two things: the new child's name, and the class that child is "
+        "applying for. The parent's name, mobile and email are already known and "
+        "already verified - never ask for any of them again.",
+        "- SAY that you are reusing them rather than doing it silently: \"I'll "
+        "register this child using the same mobile number and email - tell me if "
+        "they should be different.\" A parent who needs a different contact for "
+        "this child can only say so if you tell them what you are about to use.",
+        "- Confirm before registering, exactly as for a first inquiry: read all "
+        "five details back and wait for the yes. A sibling gets no verification "
+        "code, so this summary is the only review there is.",
+        "- The reused verification covers the reused contacts ONLY. If they give "
+        "a different mobile or email for this child, that contact is unproven: "
+        "set it, and let the system verify the changed one. A mobile the parent "
+        "is messaging from is already proven - never re-verify that.",
+    ]
+
+
+def build_class_instructions(*, agent_id: int | None = None,
+                             institution_id: int | None = None) -> list[str]:
+    """The classes this school actually offers, stated in the CONVERSATION.
+
+    The same list already reaches the model as valid ids for the JSON field,
+    but that is read as output formatting - it does not stop the model naming
+    classes the school has never offered. Naming them here, as the only ones
+    that exist, is what makes an unlisted answer refusable rather than
+    silently accepted.
+    """
+    try:
+        rows = get_active_classes(agent_id=agent_id, institution_id=institution_id) or []
+    except Exception:
+        return []
+    names = [str(r.get('name') or '').strip() for r in rows if isinstance(r, dict)]
+    names = [n for n in names if n]
+    if not names:
+        return []
+    return [
+        "CLASSES - the complete list this school offers: " + ", ".join(names) + ".",
+        "- Use these names EXACTLY when telling a parent what is available. Never "
+        "invent a range such as 'Grades 1-10', never mention a class that is not "
+        "on this list, and never assume the school offers kindergarten, higher "
+        "secondary or anything else because similar schools do.",
+        "- If the parent names a class that is NOT on the list, say plainly that "
+        "it is not offered here, repeat what is, and ask them to choose. Do NOT "
+        "accept it, do NOT set class_id, and do NOT carry on to the next step - "
+        "an inquiry cannot be registered without a class from this list, so "
+        "accepting an invalid one silently loses the whole inquiry.",
+        "- class_id must always be the id of the class the parent chose from this "
+        "list, set in the SAME turn they choose it.",
+    ]
 
 
 def build_institution_choices(*, agent_id: int | None = None) -> list[dict]:

@@ -2,7 +2,7 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from api.routes.shared.generic_webhook import handle_incoming_webhook
-from api.routes.shared.channel_registry import registry
+from api.routes.shared.channel_registry import registry, require_tenant
 
 
 def _get_service(channel_id: str):
@@ -56,6 +56,12 @@ async def telegram_webhook(
     except Exception as e:
         logging.error(f"Error parsing webhook payload: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # Telegram has no org-prefixed route and no payload field that names a
+    # tenant, so under strict tenancy it cannot be served at all. Refusing is
+    # the honest outcome: the alternative is filing its messages against the
+    # default organisation.
+    require_tenant('telegram')
 
     return await handle_incoming_webhook(
         channel_type='telegram',

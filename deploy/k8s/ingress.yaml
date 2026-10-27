@@ -22,4 +22,4 @@ spec:
             backend:
               service:
                 name: gateway
-                port: { number: 8001 }
+                port: { number: 5021 }

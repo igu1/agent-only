@@ -16,6 +16,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The agent's port: AGENT_PORT from the .env next to this script, default 5021
+# (the same number inside the container and on the host - see .env.example).
+AGENT_PORT=$( { grep -E '^AGENT_PORT=' .env 2>/dev/null || true; } | tail -n 1 | cut -d= -f2- | tr -d "[:space:]\"'" )
+AGENT_PORT=${AGENT_PORT:-5021}
+
 ORG=$(echo "${1:?org key required}" | tr '[:upper:]' '[:lower:]')
 BACKEND=${2:?backend_url required}
 GKEY=${3:?google_api_key required}
@@ -51,7 +56,7 @@ jq --arg o "$ORG" --arg b "${BACKEND%/}" --arg t "$TOKEN" --arg g "$GKEY" \
 chmod 600 tenants.json
 
 # live reload - any registered org token authenticates the admin endpoint
-curl -sf -X POST http://localhost:8080/infra/reload-tenants \
+curl -sf -X POST "http://localhost:${AGENT_PORT}/infra/reload-tenants" \
      -H "X-Agent-Token: $TOKEN" >/dev/null \
   && echo "agent reloaded" || echo "WARN: reload failed - is the agent up?"
 
@@ -64,7 +69,7 @@ Org '$ORG' onboarded. Complete the setup:
      "AgentGateway": {
        "AutoFollowup": false,
        "ApiToken": "$TOKEN",
-       "AgentBaseUrl": "http://<this-server>:8080"
+       "AgentBaseUrl": "http://<this-server>:${AGENT_PORT}"
      }
 
 2. The org's Angular client, so its web chat uses the org-prefixed URL:

@@ -3,14 +3,16 @@ services:
     build: .
     container_name: crono-agent
     ports:
-      # - "8080:8001"     # Production
-      - "8001:8001"       # Local Test
+      # ONE number inside the container and on the host: AGENT_PORT from .env
+      # (default 5021). Change it there, nowhere else.
+      - "${AGENT_PORT:-5021}:${AGENT_PORT:-5021}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
       - PYTHONPATH=/app/agent
+      - AGENT_PORT=${AGENT_PORT:-5021}
       # inside a container "localhost" is the container itself - reach the
       # host machine's .NET API via Docker's host alias (overrides the
       # native-dev localhost value in .env; compose environment beats env_file)

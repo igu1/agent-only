@@ -13,7 +13,7 @@ no downtime for the organizations already being served. Design and rationale:
 
 | Component | Image | Purpose |
 |---|---|---|
-| Agent service | built from this repo (FastAPI, port 8001 inside) | AI admissions chat: web-chat + WhatsApp webhooks, RAG, lead sync |
+| Agent service | built from this repo (FastAPI, listens on `AGENT_PORT` — default 5021, the same number inside the container and on the host) | AI admissions chat: web-chat + WhatsApp webhooks, RAG, lead sync |
 | Qdrant | `qdrant/qdrant:latest` | Vector database for the AI knowledge, shared by every organization |
 
 Two files configure it, and the split matters:
@@ -49,7 +49,7 @@ disable the sweep; raise it if you want longer chat memory.
 ## 2. Prerequisites
 
 - Linux server with Docker Engine + Compose plugin (`docker compose version`).
-- One free TCP port for the shared agent (the examples use 8080).
+- One free TCP port for the shared agent: `AGENT_PORT` in `.env`, default 5021 (what every example below uses).
 - `jq` and `openssl` (the onboarding script uses both).
 - A public HTTPS domain, proxied by the server's existing nginx — Meta refuses
   non-HTTPS callbacks. **One domain is enough for every organization**, since
@@ -95,7 +95,7 @@ cp ../../.env.example .env              # then fill it in
 echo '{}' > tenants.json                # orgs are added in section 5
 chmod 600 .env tenants.json
 docker compose up -d
-curl -s http://localhost:8080/health    # -> {"status":"ok"}
+curl -s http://localhost:5021/health    # -> {"status":"ok"}
 ```
 
 `tenants.json` is **volume-mounted, never baked into the image** — see
@@ -117,7 +117,7 @@ memory and Qdrant collections, so renaming it orphans both.
 By hand instead — add the block to `tenants.json`, then:
 
 ```bash
-curl -X POST http://localhost:8080/infra/reload-tenants \
+curl -X POST http://localhost:5021/infra/reload-tenants \
      -H "X-Agent-Token: $AGENT_API_TOKEN"
 ```
 
@@ -141,7 +141,7 @@ In that organization's OnlineCampus `appsettings.json` (or environment):
 "AgentGateway": {
   "AutoFollowup": false,
   "ApiToken": "agw_<the-token-onboard-org.sh-printed>",
-  "AgentBaseUrl": "http://<this-server>:8080"
+  "AgentBaseUrl": "http://<this-server>:5021"
 }
 ```
 
@@ -246,8 +246,8 @@ An empty result means nothing relies on the fallback and it is safe to turn
 on. Afterwards, these two calls confirm it took:
 
 ```bash
-curl -s -X POST http://localhost:8080/webhooks/webchat/1/session          # 400
-curl -s -X POST http://localhost:8080/webhooks/<org>/webchat/1/session    # served
+curl -s -X POST http://localhost:5021/webhooks/webchat/1/session          # 400
+curl -s -X POST http://localhost:5021/webhooks/<org>/webchat/1/session    # served
 ```
 
 ## 11. Day-2: updating, health, commands
@@ -268,7 +268,7 @@ update loses neither. The chat memory is a cache in any case (section 1).
 **Health** — one container, so one check:
 
 ```bash
-curl -sf http://localhost:8080/health \
+curl -sf http://localhost:5021/health \
   || docker compose -f deploy/saas/docker-compose.yml restart agent
 ```
 
@@ -277,7 +277,7 @@ misconfigured for one tenant — an org whose `backend_url` is wrong answers 500
 while every other org is fine:
 
 ```bash
-curl -sf "http://localhost:8080/webhooks/<org>/webchat/1/session" -X POST
+curl -sf "http://localhost:5021/webhooks/<org>/webchat/1/session" -X POST
 ```
 
 That returns 404 for an org key missing from the registry, which is the
@@ -336,5 +336,5 @@ the caveat in that README.
 - Meta access tokens live in each org's own database (managed via the CRM
   Channels tab) — use permanent System User tokens, not 24-hour dev tokens.
 - Qdrant has no published port; keep it that way.
-- The agent port (8080) can be firewalled to localhost + the .NET hosts if the
+- The agent port (`AGENT_PORT`, default 5021) can be firewalled to localhost + the .NET hosts if the
   webhook goes through nginx only.

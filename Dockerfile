@@ -14,6 +14,13 @@ RUN useradd -m -u 10001 app && \
     chown -R app:app /app/agent
 USER app
 
-EXPOSE 8001
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 CMD curl -fsS http://localhost:8001/health || exit 1
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# ONE port for the whole stack, default 5021. The build arg bakes the default
+# into the image; AGENT_PORT from .env / compose overrides it at run time, and
+# uvicorn, the HEALTHCHECK and the compose port mapping all read that one value.
+ARG AGENT_PORT=5021
+ENV AGENT_PORT=${AGENT_PORT}
+EXPOSE ${AGENT_PORT}
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 CMD curl -fsS "http://localhost:${AGENT_PORT}/health" || exit 1
+# sh -c so the port can come from the environment; exec keeps uvicorn as PID 1
+# so docker's SIGTERM reaches it directly (a clean stop, not a 10 s kill)
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port \"${AGENT_PORT:-5021}\""]

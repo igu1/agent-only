@@ -11,15 +11,15 @@
     turn and would otherwise restart the server mid-conversation.
 
 .EXAMPLE
-    .\dev-run.ps1                 # Qdrant + agent on http://127.0.0.1:8001
-    .\dev-run.ps1 -Port 8080
+    .\dev-run.ps1                 # Qdrant + agent on http://127.0.0.1:<AGENT_PORT from .env, default 5021>
+    .\dev-run.ps1 -Port 8001      # override the .env port for this run only
     .\dev-run.ps1 -NoQdrant       # tools-only, no vector store
     .\dev-run.ps1 -Install        # (re)install requirements first
     .\dev-run.ps1 -Test           # run the test suite instead of serving
 #>
 [CmdletBinding()]
 param(
-    [int]$Port = 8001,
+    [int]$Port = 0,               # 0 = AGENT_PORT from .env, else 5021
     [string]$BindHost = '127.0.0.1',
     [switch]$NoQdrant,
     [switch]$NoReload,
@@ -71,6 +71,16 @@ if (-not (Test-Path (Join-Path $PSScriptRoot '.env'))) {
     Write-Warn 'No .env found. Create one from the template and fill it in:'
     Write-Host '      Copy-Item .env.example .env' -ForegroundColor Gray
     throw '.env is required'
+}
+
+# ── port ────────────────────────────────────────────────────────────────────
+# ONE number everywhere: AGENT_PORT in .env is what the Docker stack and the
+# campus dev config (environment.development.ts, appsettings AgentBaseUrl)
+# use, so the native run listens on it too unless -Port overrides it.
+if ($Port -le 0) {
+    $portLine = Select-String -Path (Join-Path $PSScriptRoot '.env') -Pattern '^\s*AGENT_PORT\s*=\s*(\d+)' |
+        Select-Object -Last 1
+    $Port = if ($null -ne $portLine) { [int]$portLine.Matches[0].Groups[1].Value } else { 5021 }
 }
 
 # ── tests ───────────────────────────────────────────────────────────────────

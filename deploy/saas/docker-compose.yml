@@ -8,15 +8,32 @@
 # in tenants.json.
 services:
   agent:
-    image: cronoagent:v1.0            # build once: docker build -t cronoagent:v1.0 <repo>
+    # Both keys on purpose: `build` lets ONE command do everything -
+    #   docker compose up -d --build
+    # - while `image` keeps the result tagged, so the worker overlay and any
+    # other compose file can reuse the same image instead of rebuilding it.
+    # Without `build` this file can only PULL cronoagent:v1.0, which exists in
+    # no registry, and `up` fails with a pull error that reads like a network
+    # problem.
+    #
+    # The context is the repo root, two levels up, because that is where the
+    # Dockerfile and .dockerignore live.
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: cronoagent:v1.0
     container_name: saas-agent
     restart: unless-stopped
     mem_limit: 1g
     ports:
-      - "8080:8001"
+      # ONE number inside and outside: AGENT_PORT from the .env next to this
+      # file (default 5021). nginx-org.conf.template and onboard-org.sh use the
+      # same value. Prefix with 127.0.0.1: to keep it off the public interface.
+      - "${AGENT_PORT:-5021}:${AGENT_PORT:-5021}"
     env_file: [.env]
     environment:
       - PYTHONPATH=/app/agent
+      - AGENT_PORT=${AGENT_PORT:-5021}
       - QDRANT_URL=http://qdrant:6333
       - TENANTS_FILE=/app/agent/tenants.json
     volumes:

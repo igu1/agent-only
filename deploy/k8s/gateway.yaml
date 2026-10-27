@@ -25,15 +25,15 @@ spec:
               mountPath: /app/agent/tenants.json
               subPath: tenants.json
               readOnly: true
-          ports: [{ containerPort: 8001 }]
+          ports: [{ containerPort: 5021 }]   # = AGENT_PORT (the image default)
           resources:
             requests: { memory: "256Mi", cpu: "100m" }
             limits: { memory: "768Mi" }
           livenessProbe:
-            httpGet: { path: /health, port: 8001 }
+            httpGet: { path: /health, port: 5021 }
             periodSeconds: 30
           readinessProbe:
-            httpGet: { path: /health, port: 8001 }
+            httpGet: { path: /health, port: 5021 }
             initialDelaySeconds: 5
             periodSeconds: 10
       volumes:
@@ -47,4 +47,4 @@ metadata:
   namespace: cronoagent
 spec:
   selector: { app: gateway }
-  ports: [{ port: 8001, targetPort: 8001 }]
+  ports: [{ port: 5021, targetPort: 5021 }]

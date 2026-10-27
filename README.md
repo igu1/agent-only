@@ -50,8 +50,8 @@ LOG_LEVEL=info
 
 ### Agent Service Only
 - **Container**: crono-agent
-- **Port**: 8001
-- **Health Check**: http://localhost:8001/health
+- **Port**: 5021 (`AGENT_PORT` in `.env`; the same number inside and outside the container)
+- **Health Check**: http://localhost:5021/health
 - **Auto-restart**: Yes
 - **Database**: External PostgreSQL connection
 
@@ -64,7 +64,7 @@ docker build -t crono-agent .
 
 ### Run the agent container:
 ```bash
-docker run -p 8001:8001 --env-file .env crono-agent
+docker run -p 5021:5021 --env-file .env crono-agent
 ```
 
 ### Access the container:
@@ -130,6 +130,6 @@ docker-compose down
 
 ## API Endpoints
 
-- **Health**: http://localhost:8001/health
-- **Chat**: http://localhost:8001/chat
-- **Docs**: http://localhost:8001/docs (if tools route is enabled)
+- **Health**: http://localhost:5021/health
+- **Chat**: http://localhost:5021/chat
+- **Docs**: http://localhost:5021/docs (if tools route is enabled)

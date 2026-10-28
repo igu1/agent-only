@@ -11,7 +11,14 @@ from fastapi import Header, HTTPException
 from infra.tenants import resolve_org_by_token, set_org
 
 
-def require_admin_token(x_agent_token: str | None = Header(default=None)) -> None:
+# async ON PURPOSE. FastAPI runs a plain `def` dependency in a worker thread
+# on a COPY of the request's context, so the org that set_org() records there
+# is thrown away when the thread returns: require_org_token, and the endpoint
+# itself, saw no organisation. Every CRM reindex under STRICT_TENANCY was
+# refused 400 "organization could not be determined" despite a valid org
+# token - and without strict tenancy it reindexed the DEFAULT tenant's
+# collections instead. An async dependency runs in the request's own context.
+async def require_admin_token(x_agent_token: str | None = Header(default=None)) -> None:
     provided = (x_agent_token or '').strip()
 
     org = resolve_org_by_token(provided)
@@ -27,7 +34,7 @@ def require_admin_token(x_agent_token: str | None = Header(default=None)) -> Non
         raise HTTPException(status_code=401, detail='Unauthorized')
 
 
-def require_org_token() -> None:
+async def require_org_token() -> None:
     """Org-scoped admin endpoints must know WHOSE data they are touching.
 
     An org's own token names its organisation; the shared operator token does

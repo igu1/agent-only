@@ -398,26 +398,65 @@ class TestReindexingNeedsToKnowWhose(TenancyCase):
     writes to <qdrant_prefix>-<agent_id>, so it would rebuild the default
     tenant's collections while the caller meant their own."""
 
-    def test_the_operator_token_alone_is_refused(self):
+    async def test_the_operator_token_alone_is_refused(self):
         with self.assertRaises(HTTPException) as cm:
-            require_org_token()
+            await require_org_token()
         self.assertEqual(cm.exception.status_code, 400)
 
-    def test_an_org_token_satisfies_it(self):
+    async def test_an_org_token_satisfies_it(self):
         T.set_org('acme')
-        require_org_token()
+        await require_org_token()
 
-    def test_the_message_points_at_tenants_json(self):
+    async def test_the_message_points_at_tenants_json(self):
         with self.assertRaises(HTTPException) as cm:
-            require_org_token()
+            await require_org_token()
         self.assertIn('tenants.json', str(cm.exception.detail))
+
+
+class TestReindexThroughTheRealRequestPath(TenancyCase):
+    """The guard tests above call the dependency directly, in one context - so
+    they could not see that FastAPI ran the token check in a worker thread on a
+    COPY of the context, and the org it resolved never reached the next
+    dependency or the endpoint. Live: every CRM reindex was refused 400 with a
+    valid org token. This goes through FastAPI exactly as a request does."""
+
+    def client(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        import api.routes.rag as RAG
+        app = FastAPI()
+        app.include_router(RAG.router)
+        seen = {}
+
+        def fake_reindex(*, knowledge, agent_id):
+            seen['org'] = T.get_org()
+            seen['resolved'] = T.org_resolved()
+        patches = (patch.object(RAG, 'build_knowledge', return_value=object()),
+                   patch.object(RAG, 'reindex_knowledge', side_effect=fake_reindex))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return TestClient(app), seen
+
+    async def test_an_org_token_reindexes_that_org(self):
+        client, seen = self.client()
+        r = client.post('/rag/reindex?agent_id=2', headers={'X-Agent-Token': 'tok-beta'})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(seen, {'org': 'beta', 'resolved': True})
+
+    async def test_a_wrong_token_is_still_refused(self):
+        with patch.dict(os.environ, {'AGENT_API_TOKEN': 'op-secret'}):
+            client, seen = self.client()
+            r = client.post('/rag/reindex?agent_id=2', headers={'X-Agent-Token': 'nope'})
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(seen, {})
 
 
 class TestAdminIsUnchangedWhenStrictIsOff(TenancyCase):
     strict = False
 
-    def test_the_operator_token_still_works(self):
-        require_org_token()
+    async def test_the_operator_token_still_works(self):
+        await require_org_token()
 
     def test_and_so_does_a_channel_with_no_org(self):
         require_tenant('webchat')

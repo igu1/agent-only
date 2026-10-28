@@ -298,7 +298,11 @@ class WhatsAppAdapter:
         """
         try:
             phone_number = message.chat_id.lstrip('+')
-            service.send_message(phone_number, text)
+            # the model writes the reply in a Markdown subset (rendered as HTML
+            # on web chat); WhatsApp has its own syntax and would show ** and
+            # [label](url) literally
+            from infra.chat_format import to_whatsapp
+            service.send_message(phone_number, to_whatsapp(text))
             return True
         except Exception:
             logger.exception('WhatsApp send failed for chat %s', message.chat_id)

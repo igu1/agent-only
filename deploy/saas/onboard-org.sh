@@ -52,7 +52,11 @@ jq --arg o "$ORG" --arg b "${BACKEND%/}" --arg t "$TOKEN" --arg g "$GKEY" \
    --argjson p "$PNIDS" --argjson w "$ORIGINS" \
    '. + {($o): {backend_url:$b, api_token:$t, google_api_key:$g,
                 qdrant_prefix:$o, phone_number_ids:$p, webchat_origins:$w}}' \
-   tenants.json > tenants.json.tmp && mv tenants.json.tmp tenants.json
+   tenants.json > tenants.json.tmp
+# Write IN PLACE, never mv: compose bind-mounts this single file, and a bind
+# mount pins the inode. mv swaps in a new inode, so the running container keeps
+# reading the OLD file and /infra/reload-tenants silently reloads stale data.
+cat tenants.json.tmp > tenants.json && rm -f tenants.json.tmp
 # The container runs as uid 10001 ('app' in the Dockerfile). A root-owned 600
 # file is UNREADABLE inside it: the loader logs a permission error and serves
 # only the default tenant, so every org route answers 'Unknown organization'.

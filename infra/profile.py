@@ -1,4 +1,6 @@
 # prompt builder - only base safety hardcoded, everything else from flow/profile API
+import re
+
 from infra.config import get_timezone
 from tools import get_sources, get_status
 
@@ -706,12 +708,24 @@ def build_introduction(*, agent_id: int | None = None, institution_id: int | Non
     topics = _introduction_topics(agent_id=source_agent, institution_id=institution_id)
     what = _join_topics(topics) if topics else 'admissions questions'
     subject = _greeting_subject(agent_id=agent_id, institution_id=institution_id)
-    opening = f"Welcome to {subject}! " if subject else "Hi! "
+    # Same Markdown subset as every reply: web chat renders the bold title and
+    # the list, WhatsApp gets *bold* and bullets (infra/chat_format). One run-on
+    # sentence of three offers was the hardest message in the chat to scan.
+    opening = f"**Welcome to {_tidy_name(subject)}!**" if subject else "**Hi!**"
     return (
-        f"{opening}I'm the admissions assistant. I can help with {what}, "
-        "start an admission inquiry for you, or check one you've already "
-        "made. How can I help?"
+        f"{opening}\n"
+        "I'm the admissions assistant. I can help you:\n\n"
+        f"- Answer questions about {what}\n"
+        "- Start an admission inquiry\n"
+        "- Check an inquiry you've already made\n\n"
+        "How can I help?"
     )
+
+
+def _tidy_name(name: str) -> str:
+    """Institution names come straight from the master ("SCHOOL,DOHA"); give a
+    comma its space so the greeting does not read as a typo."""
+    return re.sub(r',(?=\S)', ', ', name)
 
 
 def build_institution_prompt(*, agent_id: int | None = None) -> str:

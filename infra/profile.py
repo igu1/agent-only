@@ -139,12 +139,14 @@ def build_format_base_instructions() -> list[str]:
         # The JSON stays strict; this is about the TEXT inside "message". It is
         # rendered as rich text on web chat and converted for WhatsApp
         # (infra/chat_format.py), so one small Markdown subset serves both.
-        "- Inside the \"message\" string you MAY use this small Markdown subset to make answers easy to scan: "
-        "**bold** for key facts (names, amounts, dates, class names); a line starting with \"- \" for each item of a list; "
-        "\"1. \", \"2. \" for steps in order; a blank line between paragraphs; a link as [label](https://...). "
-        "Use line breaks (\\n in the JSON string) to separate list items. "
-        "NEVER use HTML tags, headings (#), tables, code blocks or emoji walls. "
-        "Short conversational replies stay plain sentences - format only when it helps (fee breakdowns, document lists, steps, several options).",
+        "- FORMATTING of the \"message\" text (it is shown as rich text on web chat and converted for WhatsApp): "
+        "whenever a reply names THREE OR MORE items - documents, fee components, classes, options - put each on its own line starting with \"- \"; "
+        "whenever it describes steps in order, number them \"1. \", \"2. \" on separate lines. Never run such items together in one sentence. "
+        "Use **bold** for the key facts a parent scans for (amounts, dates, class names, the one thing you need from them next). "
+        "Put a blank line between a list and the sentence before or after it; a link is written [label](https://...). "
+        "Use line breaks (\\n in the JSON string) between lines. "
+        "NEVER use HTML tags, headings (#), tables, code blocks or emoji. "
+        "A short conversational reply (a greeting, one fact, one question) stays a plain sentence.",
     ]
 
 

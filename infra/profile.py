@@ -322,7 +322,13 @@ def build_expected_output(flow: dict = None, *, agent_id: int | None = None) -> 
         "Always include metadata.language = english|arabic and make message match that language.",
         "Schema:",
         "{",
-        '  "message": string,',
+        # The format rule is restated HERE, on the field itself: stated only in the
+        # Format section, far above the tool list, the light model ignored it and
+        # ran every document list and step sequence into one paragraph.
+        '  "message": string (the reply text. When it names THREE OR MORE items - documents, fee parts, classes, options - '
+        'write one per line as "- item"; steps in order as "1. step", "2. step". Lines are separated by \\n, with a blank line '
+        'before and after a list. **bold** the key facts. A greeting or one-fact answer stays one plain sentence. '
+        'Example: "These documents are needed:\\n\\n- **Birth certificate**\\n- **Passport copy**\\n- **Previous school records**\\n\\nCould I have your name?"),',
         '  "status": integer (REQUIRED - must be a valid status ID from above),',
         '  "source": integer (REQUIRED - must be a valid source ID from above),',
         '  "class_id": integer|null (valid class ID the student is applying for),',

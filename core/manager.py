@@ -172,9 +172,15 @@ def get_model(model_name: str = None):
         # SaaS Phase 1: each tenant may carry its OWN Gemini key (quota and
         # billing isolation per organization); default tenant = env key
         from infra.tenants import get_tenant
+        # GOOGLE_THINKING_LEVEL (optional: e.g. low | high): how long the model
+        # reasons before answering. Measured live on gemini-3.5-flash, the
+        # answer call took ~7.8s every turn - the bulk of the reply time. Unset
+        # keeps the model's own default.
+        thinking = (config('GOOGLE_THINKING_LEVEL', default='') or '').strip().lower()
         return Gemini(
             id=config('GOOGLE_MODEL_ID', default="gemini-3-flash-preview"),
             api_key=get_tenant().get('google_api_key'),
+            thinking_level=thinking or None,
         )
     elif model_name == 'openrouter':
         return OpenRouter(id=config('OPENROUTER_MODEL_ID', default="google/gemini-3.1-flash-lite-preview"))

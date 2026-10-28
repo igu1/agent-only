@@ -23,5 +23,9 @@ asgiref==3.12.1
 channels_redis==4.3.0
 python-decouple==3.8
 sqlalchemy==2.0.46
+# CRM client (infra/django_api.py): pooled connections, HTTP/2 so parallel
+# settings fetches share ONE connection instead of a TLS handshake each
+httpx==0.28.1
+h2==4.4.1
 # Vector Database
 qdrant-client==1.19.0

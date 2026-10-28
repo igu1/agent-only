@@ -20,7 +20,18 @@ REQUEST_TIMEOUT_SECONDS = 35
 # ~0.1s on a warm connection - several seconds of every reply spent shaking
 # hands. The pool is keyed by host, so every tenant's backend gets its own
 # warm connections. httpx.Client is thread-safe.
+# HTTP/2 when the h2 package is present (pinned in requirements.txt): the
+# parallel settings warm-up (tools/prefetch.py) then multiplexes over ONE
+# connection. Over HTTP/1.1 each parallel request opened its own, and the
+# first cold load paid ~11 handshakes. Missing h2 just means HTTP/1.1.
+try:
+    import h2  # noqa: F401
+    _HTTP2 = True
+except ImportError:
+    _HTTP2 = False
+
 _client = httpx.Client(
+    http2=_HTTP2,
     timeout=REQUEST_TIMEOUT_SECONDS,
     limits=httpx.Limits(max_connections=50, max_keepalive_connections=20,
                         keepalive_expiry=60),

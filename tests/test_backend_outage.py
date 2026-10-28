@@ -12,8 +12,9 @@ retry; the second would become a retry storm.
     python -m unittest discover -s tests -p "test_backend_outage.py"
 """
 import unittest
-import urllib.error
 from unittest.mock import patch
+
+import httpx
 
 from fastapi import HTTPException
 
@@ -193,13 +194,11 @@ class TestTheClientReportsWhatWentWrong(unittest.TestCase):
     webhook now depends on."""
 
     def _http_error(self, code):
-        import io as _io
-        return urllib.error.HTTPError('u', code, 'Server Error', {},
-                                      _io.BytesIO(b'{"error":"x"}'))
+        return httpx.Response(code, content=b'{"error":"x"}')
 
     def test_a_transport_failure_becomes_503(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=urllib.error.URLError('refused')):
+        with patch.object(API, '_send',
+                          side_effect=httpx.ConnectError('refused')):
             with patch.object(API, 'get_tenant',
                               return_value={'backend_url': 'http://x', 'api_token': 't'}):
                 r = API.post('/api/agent/v1/inbound/', {'a': 1})
@@ -209,7 +208,7 @@ class TestTheClientReportsWhatWentWrong(unittest.TestCase):
     def test_http_statuses_are_preserved(self):
         for code in (500, 502, 503, 504):
             with self.subTest(code=code):
-                with patch('urllib.request.urlopen', side_effect=self._http_error(code)):
+                with patch.object(API, '_send', return_value=self._http_error(code)):
                     with patch.object(API, 'get_tenant',
                                       return_value={'backend_url': 'http://x',
                                                     'api_token': 't'}):
@@ -218,16 +217,16 @@ class TestTheClientReportsWhatWentWrong(unittest.TestCase):
                 self.assertEqual(r['status'], code)
 
     def test_a_get_failure_is_classified_too(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=urllib.error.URLError('refused')):
+        with patch.object(API, '_send',
+                          side_effect=httpx.ConnectError('refused')):
             with patch.object(API, 'get_tenant',
                               return_value={'backend_url': 'http://x', 'api_token': 't'}):
                 r = API.get('/api/agent/v1/faqs/')
         self.assertEqual(r['status'], 503)
 
     def test_the_failure_is_logged_with_method_path_and_status(self):
-        with patch('urllib.request.urlopen',
-                   side_effect=urllib.error.URLError('refused')):
+        with patch.object(API, '_send',
+                          side_effect=httpx.ConnectError('refused')):
             with patch.object(API, 'get_tenant',
                               return_value={'backend_url': 'http://x', 'api_token': 't'}):
                 with self.assertLogs('infra.django_api', level='WARNING') as log:
@@ -243,8 +242,8 @@ class TestTheClientReportsWhatWentWrong(unittest.TestCase):
         secret_token = 'agw_SUPERSECRET_TOKEN_VALUE'
         payload = {'otp_code': '123456', 'phone_number': '+919876543210',
                    'email': 'parent@example.com'}
-        with patch('urllib.request.urlopen',
-                   side_effect=urllib.error.URLError('refused')):
+        with patch.object(API, '_send',
+                          side_effect=httpx.ConnectError('refused')):
             with patch.object(API, 'get_tenant',
                               return_value={'backend_url': 'http://x',
                                             'api_token': secret_token}):
@@ -256,10 +255,9 @@ class TestTheClientReportsWhatWentWrong(unittest.TestCase):
 
     def test_an_error_body_is_never_logged(self):
         """An unhandled .NET exception page can contain the connection string."""
-        import io as _io
         leak = b'Server=db;Password=hunter2;'
-        err = urllib.error.HTTPError('u', 500, 'Server Error', {}, _io.BytesIO(leak))
-        with patch('urllib.request.urlopen', side_effect=err):
+        err = httpx.Response(500, content=leak)
+        with patch.object(API, '_send', return_value=err):
             with patch.object(API, 'get_tenant',
                               return_value={'backend_url': 'http://x', 'api_token': 't'}):
                 with self.assertLogs('infra.django_api', level='WARNING') as log:
@@ -267,20 +265,8 @@ class TestTheClientReportsWhatWentWrong(unittest.TestCase):
         self.assertNotIn('hunter2', '\n'.join(log.output))
 
     def test_a_successful_call_logs_nothing(self):
-        import io as _io
-
-        class OkResponse:
-            def read(self):
-                return b'{"ok": true}'
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
         logger = API.logger
-        with patch('urllib.request.urlopen', return_value=OkResponse()):
+        with patch.object(API, '_send', return_value=httpx.Response(200, content=b'{"ok": true}')):
             with patch.object(API, 'get_tenant',
                               return_value={'backend_url': 'http://x', 'api_token': 't'}):
                 with patch.object(logger, 'warning') as warned:

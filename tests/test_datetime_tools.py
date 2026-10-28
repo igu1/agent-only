@@ -41,6 +41,7 @@ def offline_backend():
             stack.enter_context(patch(f'{module}.get', _no_backend))
             stack.enter_context(patch(f'{module}.cached_query', _passthrough))
         stack.enter_context(patch('urllib.request.urlopen', _no_network))
+        stack.enter_context(patch('infra.django_api._send', _no_network))
         yield
 
 

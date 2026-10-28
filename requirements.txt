@@ -1,20 +1,27 @@
 # FastAPI Agent Service Dependencies
-fastapi>=0.128.0
-uvicorn[standard]>=0.40.0
-python-dotenv>=1.2.1
+#
+# EXACT pins, on purpose. These are the versions the agent is developed and
+# tested against; a server builds its image from this file, and an open-ended
+# '>=' handed one server agno 3.x, whose Agent() no longer accepts
+# enable_user_memories - every chat turn then died with a TypeError while
+# /health stayed green. Upgrade deliberately: bump here, run the tests,
+# rebuild.
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+python-dotenv==1.2.3
 
 # Agno AI Agent
-agno>=2.3.26
+agno==2.9.0
 
 # LLM Providers
-groq>=1.0.0
-openai>=2.15.0
-google-genai>=1.59.0
+groq==1.6.0
+openai==3.3.0
+google-genai==2.18.1
 
 # WebSocket bridge
-asgiref>=3.10.0
-channels_redis>=4.2.1
+asgiref==3.12.1
+channels_redis==4.3.0
 python-decouple==3.8
 sqlalchemy==2.0.46
 # Vector Database
-qdrant-client>=1.7.0
+qdrant-client==1.19.0

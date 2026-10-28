@@ -53,6 +53,11 @@ jq --arg o "$ORG" --arg b "${BACKEND%/}" --arg t "$TOKEN" --arg g "$GKEY" \
    '. + {($o): {backend_url:$b, api_token:$t, google_api_key:$g,
                 qdrant_prefix:$o, phone_number_ids:$p, webchat_origins:$w}}' \
    tenants.json > tenants.json.tmp && mv tenants.json.tmp tenants.json
+# The container runs as uid 10001 ('app' in the Dockerfile). A root-owned 600
+# file is UNREADABLE inside it: the loader logs a permission error and serves
+# only the default tenant, so every org route answers 'Unknown organization'.
+# Owner = that uid keeps the file private on the host (root still reads it).
+chown 10001:10001 tenants.json 2>/dev/null || true
 chmod 600 tenants.json
 
 # live reload - any registered org token authenticates the admin endpoint

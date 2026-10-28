@@ -94,6 +94,7 @@ cd /opt/cronoagent-src/deploy/saas
 cp ../../.env.example .env              # then fill it in
 echo '{}' > tenants.json                # orgs are added in section 5
 chmod 600 .env tenants.json
+chown 10001:10001 tenants.json          # the container's user; a root-owned 600 file is unreadable inside it
 docker compose up -d
 curl -s http://localhost:5021/health    # -> {"status":"ok"}
 ```
@@ -322,7 +323,10 @@ the caveat in that README.
   agent token and Gemini key in one file; `.dockerignore` excludes it and the
   compose file mounts it read-only at runtime. Baking it in would ship every
   customer's secrets inside an artifact that gets pushed to a registry.
-  `chmod 600` on the server, same as an `.env`.
+  `chmod 600` on the server, same as an `.env` - plus `chown 10001:10001`,
+  because the agent runs as that unprivileged user inside the container and
+  must be able to read the mounted file (the symptom otherwise is every org
+  route answering `Unknown organization` while the file looks fine on the host).
 - **Every organization gets its own `api_token`.** It is not only a password,
   it is the organization's identity on admin calls — reusing one across orgs
   makes them indistinguishable to the agent.

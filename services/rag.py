@@ -22,7 +22,13 @@ def _collection_name(agent_id: int | None) -> str:
 def _build_embedder():
     provider = os.getenv("AGNO_EMBEDDER", "openai").strip().lower()
     if provider == "google":
-        return GeminiEmbedder()
+        # The TENANT's key, same as the chat model (core/manager.get_model).
+        # Bare GeminiEmbedder() reads GOOGLE_API_KEY from the environment,
+        # which a SaaS deploy does not set (keys live in tenants.json): every
+        # knowledge search failed "No API key was provided", the model retried
+        # the search 3x, and answered without the school's documents.
+        from infra.tenants import get_tenant
+        return GeminiEmbedder(api_key=get_tenant().get('google_api_key'))
     return OpenAIEmbedder()
 
 

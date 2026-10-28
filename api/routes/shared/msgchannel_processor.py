@@ -659,6 +659,16 @@ async def handle_agent_batch(
 
     # the backend has just spoken - store what it said for the next turn
     next_stage = compute_stage(update_resp, previous=stage)
+    # A code is outstanding but this chat never told the parent: the turn that
+    # issued it lost its response (the backend finished after our timeout, so
+    # its one-time 'new' notice went nowhere), and every later turn is silent by
+    # design. Seen live: "trouble saving" -> "yes" -> "your details have been
+    # noted", with a code sitting unannounced and the inquiry never saved.
+    # Entering awaiting_verification without a notice IS that case - say it now.
+    if (update_resp.get('otp_required') and not update_resp.get('otp_notice')
+            and stage != STAGE_AWAITING_VERIFICATION
+            and next_stage == STAGE_AWAITING_VERIFICATION):
+        update_resp['otp_notice'] = 'pending'
     if next_stage != stage:
         save_stage(agent, session_id, next_stage)
     # the school's posture travels on the same response; remembered so the NEXT
@@ -719,7 +729,9 @@ async def handle_agent_batch(
             # the resend verdicts: the model asked for a code but does not know
             # whether it was issued, refused, or failed to send - only the
             # server does, so only the server tells the parent
-            'resent', 'resend_too_soon', 'resend_limit', 'resend_failed')
+            'resent', 'resend_too_soon', 'resend_limit', 'resend_failed',
+            # a code issued on a turn whose response was lost - see above
+            'pending')
     otp_success_turn = bool(update_resp.get('otp_verified_now'))
     # post-submission edit attempt: the server refused the change (submitted
     # inquiries are read-only in chat) - the AI's reply may falsely claim the
@@ -853,6 +865,14 @@ async def handle_agent_batch(
                 f"I've already sent several codes to {dest}, so I can't send another "
                 f"right now. Please check your spam folder - if nothing has arrived, "
                 f"our admissions team can complete this with you directly."
+            )
+        elif otp_notice == 'pending':
+            # the send's outcome was lost with that response, so this claims
+            # only that a code was issued, and points at the resend path
+            otp_msg = (
+                f"To complete your inquiry, please type the verification code we "
+                f"sent to {dest}. If it hasn't arrived, check your spam folder or "
+                f"ask me to resend it."
             )
         elif otp_notice == 'resend_failed':
             # honest: the code exists, the message did not go

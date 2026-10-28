@@ -887,8 +887,22 @@ class TestResendNotices(TurnHarness):
 
     async def test_a_silent_otp_turn_still_lets_the_model_answer(self):
         """A question while a code is outstanding: no notice, no suppression."""
-        await self.run_turn(update_resp={'otp_required': True, 'otp_notice': None})
+        await self.run_turn(agent=StubAgent(stage=STAGE_AWAITING_VERIFICATION),
+                            update_resp={'otp_required': True, 'otp_notice': None})
         self.assertEqual(self.sent, ['Which class is your child applying for?'])
+
+    async def test_an_unannounced_code_is_announced(self):
+        """The issuing turn's response was lost (backend outlived our timeout),
+        so the chat is still 'collecting' when a code turns out to be
+        outstanding. Seen live: the model said "your details have been noted"
+        and the parent never learned a code existed."""
+        await self.run_turn(update_resp={'otp_required': True, 'otp_notice': None,
+                                         'otp_target': 'email'})
+        self.assertEqual(len(self.sent), 1, 'the model also spoke')
+        text = self.sent[0].lower()
+        self.assertIn('verification code', text)
+        self.assertIn('your email', text)
+        self.assertIn('resend', text)
 
 
 class TestResendIntentIsForwarded(TurnHarness):

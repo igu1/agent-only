@@ -1,4 +1,6 @@
 # business info tools - agent uses these to look up stuff on the fly
+import threading
+
 from agno.tools import tool
 from tools.getAi import (
     get_active_locations,
@@ -106,14 +108,17 @@ def build_business_tools(*, agent_id: int | None = None) -> list:
         }
 
     @tool
-    def get_inquiry_status(phone_number: str) -> list[dict]:
-        """Look up the LIVE admission inquiry status registered against a mobile
-        number. Returns one row per inquiry: student_name, class_name,
-        institution_name, status_name, inquiry_date, next_followup_date. Use
-        whenever the parent or student asks about the status or progress of their
-        inquiry, application, or admission. Pass the mobile number the inquiry was
-        made with (any format - matching is on the trailing digits)."""
-        return get_inquiry_status_rows(phone_number)
+    def get_inquiry_status(phone_number: str, email: str | None = None) -> list[dict] | dict:
+        """Look up the LIVE admission inquiry status, for the school's CURRENT
+        ADMISSION YEAR only. Returns one row per student: student_name,
+        class_name, institution_name, status_name, inquiry_date,
+        next_followup_date. Use whenever the parent or student asks about the
+        status or progress of their inquiry, application, or admission.
+        Pass the mobile number AND the email address the inquiry was made with
+        (on WhatsApp the email is not needed). A row may also carry next_step
+        (and next_step_ar / status_name_ar): the school's own next-step line for
+        that status - give it to the parent as written, after the status."""
+        return _inquiry_status_lookup(phone_number, email)
 
     return [
         get_business_locations,
@@ -126,3 +131,86 @@ def build_business_tools(*, agent_id: int | None = None) -> list:
         get_inquiry_status,
         get_sources,
     ]
+
+
+# ── inquiry status: who may see it ───────────────────────────────────────
+# The CRM makes the decision (WhatsApp = the sender's own number; elsewhere the
+# mobile AND email must sit on the same inquiry). This side only asks for what
+# the CRM will need and stops a chat that keeps guessing.
+
+STATUS_LOOKUP_MAX_FAILURES = 3
+
+# (org, lead_id) -> failed lookups in that conversation. In-process on purpose:
+# it only has to outlast one chat's guessing, and a restart costing a guesser
+# three more tries is not a weakness worth a database column.
+_status_failures: dict[tuple[str, int], int] = {}
+_status_failures_lock = threading.Lock()
+
+
+def _failure_key() -> tuple[str, int] | None:
+    from infra.tenants import get_org
+    from tools.turn_context import current_turn
+    lead_id = current_turn().lead_id
+    return (get_org(), int(lead_id)) if lead_id else None
+
+
+def _inquiry_status_lookup(phone_number: str, email: str | None) -> list[dict] | dict:
+    from tools.turn_context import current_turn
+    turn = current_turn()
+    on_whatsapp = turn.channel_type == 'whatsapp'
+    email = (email or '').strip() or None
+
+    if not on_whatsapp and not email:
+        # nothing to check yet - no CRM call, and not counted as a failure
+        return {
+            "rows": [],
+            "verification_needed": True,
+            "tell_parent": (
+                "To protect student information, ask for the mobile number AND the "
+                "email address used on the inquiry, then call this again with both. "
+                "Do not say whether any inquiry exists."
+            ),
+        }
+
+    key = _failure_key()
+    with _status_failures_lock:
+        failures = _status_failures.get(key, 0) if key else 0
+    if failures >= STATUS_LOOKUP_MAX_FAILURES:
+        return {
+            "rows": [],
+            "locked": True,
+            "tell_parent": (
+                "Status cannot be checked in this chat any more. Ask the parent to "
+                "contact the admissions office to check their inquiry status. Do not "
+                "try another lookup."
+            ),
+        }
+
+    rows = get_inquiry_status_rows(phone_number, email=email, lead_id=turn.lead_id)
+    if rows:
+        if key:
+            with _status_failures_lock:
+                _status_failures.pop(key, None)
+        return rows
+
+    if key and not on_whatsapp:
+        with _status_failures_lock:
+            _status_failures[key] = _status_failures.get(key, 0) + 1
+    # ONE neutral answer for every miss - wrong number, wrong email, no email on
+    # file, or no current-year inquiry - so the lookup cannot be used to test
+    # whether a number or an address is registered.
+    return {
+        "rows": [],
+        "tell_parent": (
+            "No inquiry was found for these details in the CURRENT admission year. "
+            "Say exactly that, without saying which detail did not match and "
+            "without saying the family is unknown to the school. Suggest checking "
+            "the mobile number and email used on the inquiry, and offer to start a "
+            "new inquiry or to have the admissions office help."
+            if not on_whatsapp else
+            "No inquiry was found for this WhatsApp number in the CURRENT admission "
+            "year. Say exactly that - do not say the family is unknown to the "
+            "school. Offer to start a new inquiry, or to have the admissions office "
+            "help with an earlier admission."
+        ),
+    }

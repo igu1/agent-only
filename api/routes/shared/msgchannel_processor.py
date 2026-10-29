@@ -562,6 +562,11 @@ async def handle_agent_batch(
         from agno.media import Audio
         run_kwargs['audio'] = [Audio(content=voice_audio_bytes, format='ogg')]
 
+    # tools that guard a parent's data (get_inquiry_status) read the
+    # conversation from here, never from the model
+    from tools.turn_context import set_turn
+    set_turn(lead_id=lead_id, channel_type=channel_type)
+
     run_output = await anyio.to_thread.run_sync(
         lambda: agent.run(batched_text, **run_kwargs)
     )

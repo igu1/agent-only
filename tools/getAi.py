@@ -82,10 +82,14 @@ def get_fee_chart(class_id: int) -> list[dict]:
     return cached_query(get_cache_key('fee_chart', class_id), fetch)
 
 
-def get_inquiry_status_rows(phone: str) -> list[dict]:
-    """Live inquiry status rows for a mobile number - never cached, the
-    status changes as staff work the inquiry."""
-    resp = _api_get('/api/agent/v1/inquiry-status/', {'phone': phone})
+def get_inquiry_status_rows(phone: str, *, email: str | None = None,
+                            lead_id: int | None = None) -> list[dict]:
+    """Live inquiry status rows - never cached, the status changes as staff
+    work the inquiry. The CRM decides what lead_id's conversation may see:
+    WhatsApp gets the sender's own number, every other channel needs the
+    mobile AND the email of the same inquiry."""
+    resp = _api_get('/api/agent/v1/inquiry-status/',
+                    {'phone': phone, 'email': email, 'lead_id': lead_id})
     return resp.get('data', []) if resp.get('ok') else []
 
 

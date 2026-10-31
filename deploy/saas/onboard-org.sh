@@ -64,10 +64,19 @@ cat tenants.json.tmp > tenants.json && rm -f tenants.json.tmp
 chown 10001:10001 tenants.json 2>/dev/null || true
 chmod 600 tenants.json
 
-# live reload - any registered org token authenticates the admin endpoint
+# live reload. NOT with the new org's token: the running agent learns that
+# token only FROM this reload, so it was refused (401) and every onboarding
+# reported "reload failed" while the agent was fine. Authenticate with a token
+# the agent already knows: the operator token from .env, else any org that was
+# registered before this one.
+RELOAD_TOKEN=$( { grep -E '^AGENT_API_TOKEN=' .env 2>/dev/null || true; } | tail -n 1 | cut -d= -f2- | tr -d "[:space:]\"'" )
+if [ -z "$RELOAD_TOKEN" ]; then
+  RELOAD_TOKEN=$(jq -r --arg o "$ORG" 'to_entries | map(select(.key != $o and (.value.api_token // "") != "")) | .[0].value.api_token // empty' tenants.json)
+fi
 curl -sf -X POST "http://localhost:${AGENT_PORT}/infra/reload-tenants" \
-     -H "X-Agent-Token: $TOKEN" >/dev/null \
-  && echo "agent reloaded" || echo "WARN: reload failed - is the agent up?"
+     -H "X-Agent-Token: ${RELOAD_TOKEN:-$TOKEN}" >/dev/null \
+  && echo "agent reloaded" \
+  || echo "WARN: reload failed - is the agent up? Reload by hand: curl -X POST http://localhost:${AGENT_PORT}/infra/reload-tenants -H 'X-Agent-Token: <an existing org token>'"
 
 cat <<EOF
 
